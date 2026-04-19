@@ -1,5 +1,6 @@
 import type { Bot } from "grammy";
 import { config } from "../config.js";
+import { agentDebugLog } from "../debug-agent-log.js";
 import { logError, logInfo } from "../logger.js";
 import {
   buildPendingModerationText,
@@ -31,7 +32,22 @@ export function registerReactionHandler(bot: Bot): void {
 
     if (chat.id !== config.chatId) return;
 
-    if (new_reaction.length <= old_reaction.length) return;
+    if (new_reaction.length <= old_reaction.length) {
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: "H4",
+        location: "reaction.ts:reaction_len_gate",
+        message: "skipped: new_reaction length not greater than old",
+        data: {
+          message_id,
+          userId: user?.id,
+          newLen: new_reaction.length,
+          oldLen: old_reaction.length,
+        },
+      });
+      // #endregion
+      return;
+    }
 
     if (!user) {
       if (actor_chat) {
@@ -77,6 +93,21 @@ export function registerReactionHandler(bot: Bot): void {
         session = null;
       }
 
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: "H5",
+        location: "reaction.ts:session_snapshot",
+        message: "risk session state",
+        data: {
+          userId: user.id,
+          message_id,
+          hasSession: Boolean(session),
+          strike: session?.strikeCount,
+          firstAtAgeMs: session ? now - session.firstAt : undefined,
+        },
+      });
+      // #endregion
+
       if (!session) {
         const text = buildPendingModerationText(user, risk.reasons, 1, windowSec);
         const keyboard = pendingModerationKeyboard(user.id, message_id);
@@ -101,6 +132,15 @@ export function registerReactionHandler(bot: Bot): void {
 
       const strikeCount = session.strikeCount + 1;
       const lastDiscussionMessageId = message_id;
+
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: "H4",
+        location: "reaction.ts:strike_increment",
+        message: "incrementing strike path",
+        data: { userId: user.id, strikeCount, windowMs },
+      });
+      // #endregion
 
       if (strikeCount >= 2 && now - session.firstAt <= windowMs) {
         await executeReactionBan({

@@ -1,5 +1,6 @@
 import type { Bot } from "grammy";
 import { config } from "../config.js";
+import { agentDebugLog } from "../debug-agent-log.js";
 import { logError } from "../logger.js";
 import { computeRisk } from "../moderation.js";
 import { parseReactionModCallback } from "../moderation-card.js";
@@ -11,6 +12,15 @@ import {
 
 export function registerModerationCallbacks(bot: Bot): void {
   bot.callbackQuery(/^([bk]):\d+:\d+$/, async (ctx) => {
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: "H2",
+      location: "moderation-callbacks.ts:entry",
+      message: "callback handler matched regex",
+      data: { data: ctx.callbackQuery.data },
+    });
+    // #endregion
+
     const parsed = parseReactionModCallback(ctx.callbackQuery.data);
     if (!parsed) {
       await ctx.answerCallbackQuery();
@@ -26,6 +36,19 @@ export function registerModerationCallbacks(bot: Bot): void {
 
     const modMessageId = msg.message_id;
     const session = await getReactionModSession(userId);
+    // #region agent log
+    agentDebugLog({
+      hypothesisId: "H5",
+      location: "moderation-callbacks.ts:after_redis",
+      message: "session for callback",
+      data: {
+        userId,
+        modMessageId,
+        hasSession: Boolean(session),
+        sessionModMsgId: session?.moderationMessageId,
+      },
+    });
+    // #endregion
     if (!session || session.moderationMessageId !== modMessageId) {
       await ctx.answerCallbackQuery({ text: "Уже обработано или устарело" });
       return;
@@ -87,6 +110,14 @@ export function registerModerationCallbacks(bot: Bot): void {
         replaceModerationMessageId: modMessageId,
       });
       await deleteReactionModSession(userId);
+      // #region agent log
+      agentDebugLog({
+        hypothesisId: "H2",
+        location: "moderation-callbacks.ts:before_answer",
+        message: "ban path completed, answering callback",
+        data: { userId },
+      });
+      // #endregion
       await ctx.answerCallbackQuery({ text: "Забанен" });
     } catch (err) {
       await logError(ctx.api, "callback «забанить»", err);
