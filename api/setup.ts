@@ -5,6 +5,8 @@ interface SetupResult {
   ok: boolean;
   message: string;
   details?: unknown;
+  /** Типы из ALLOWED_UPDATES, которых нет в getWebhookInfo — тогда Telegram не шлёт такие апдейты */
+  missing_allowed_updates?: string[];
 }
 
 /** Именованный GET — иначе Vercel трактует default как legacy (req, res), Web Request не собирается. */
@@ -55,7 +57,14 @@ export async function GET(request: Request): Promise<Response> {
       result = { ok: true, message: "Webhook удалён" };
     } else if (action === "info") {
       const info = await bot.api.getWebhookInfo();
-      result = { ok: true, message: "Webhook info", details: info };
+      const allowed = new Set(info.allowed_updates ?? []);
+      const missing = [...ALLOWED_UPDATES].filter((t) => !allowed.has(t));
+      result = {
+        ok: true,
+        message: "Webhook info",
+        details: info,
+        missing_allowed_updates: missing,
+      };
     } else {
       await bot.api.setWebhook(webhookUrl, {
         secret_token: cfg.webhookSecret,
@@ -63,10 +72,13 @@ export async function GET(request: Request): Promise<Response> {
         drop_pending_updates: true,
       });
       const info = await bot.api.getWebhookInfo();
+      const allowed = new Set(info.allowed_updates ?? []);
+      const missing = [...ALLOWED_UPDATES].filter((t) => !allowed.has(t));
       result = {
         ok: true,
         message: `Webhook установлен на ${webhookUrl}`,
         details: info,
+        missing_allowed_updates: missing,
       };
     }
   } catch (err) {

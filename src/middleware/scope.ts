@@ -6,6 +6,11 @@ import { config } from "../config.js";
  * callback из чата модерации. Остальное — игнор.
  */
 export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise<void> {
+  if (ctx.update.callback_query) {
+    const d = ctx.update.callback_query.data;
+    console.warn("[tg] callback_query", ctx.update.update_id, d?.slice(0, 80) ?? "(no data)");
+  }
+
   const mr = ctx.messageReaction;
   if (mr) {
     if (mr.chat.id !== config.chatId) return;
@@ -19,6 +24,11 @@ export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise
       msg && "chat" in msg && msg.chat !== undefined ? (msg.chat as { id: number }).id : undefined;
 
     if (chatId === undefined) {
+      console.warn("[scope] callback_query: no message.chat", {
+        update_id: ctx.update.update_id,
+        hasMessage: Boolean(msg),
+        messageKeys: msg && typeof msg === "object" ? Object.keys(msg) : [],
+      });
       await ctx.answerCallbackQuery({ text: "Нет данных чата" }).catch(() => {});
       return;
     }
