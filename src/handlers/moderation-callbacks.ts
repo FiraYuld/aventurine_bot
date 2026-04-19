@@ -1,4 +1,5 @@
-import type { Bot } from "grammy";
+import type { Bot, Context } from "grammy";
+import { GrammyError } from "grammy";
 import { config } from "../config.js";
 import { logError } from "../logger.js";
 import { computeRisk } from "../moderation.js";
@@ -9,32 +10,47 @@ import {
   getReactionModSession,
 } from "../reaction-mod-session.js";
 
+async function safeAnswer(
+  ctx: Context,
+  other?: Parameters<Context["answerCallbackQuery"]>[0],
+): Promise<void> {
+  try {
+    await ctx.answerCallbackQuery(other);
+  } catch (e) {
+    const msg = e instanceof GrammyError ? e.description : String(e);
+    console.error("[mod-callback] answerCallbackQuery failed", msg);
+  }
+}
+
 export function registerModerationCallbacks(bot: Bot): void {
-  bot.callbackQuery(/^([bk]):\d+:\d+$/, async (ctx) => {
-    const parsed = parseReactionModCallback(ctx.callbackQuery.data);
+  // Не использовать bot.callbackQuery(/^.../) — при несовпадении regex GrammY не
+  // вызывает хендлер и Telegram ждёт answerCallbackQuery бесконечно.
+  bot.on("callback_query:data", async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const parsed = parseReactionModCallback(data);
     if (!parsed) {
-      await ctx.answerCallbackQuery();
+      await safeAnswer(ctx);
       return;
     }
 
     const { kind, userId } = parsed;
     const msg = ctx.callbackQuery.message;
     if (!msg || !("message_id" in msg)) {
-      await ctx.answerCallbackQuery({ text: "Нет сообщения" });
+      await safeAnswer(ctx, { text: "Нет сообщения" });
       return;
     }
 
     const modMessageId = msg.message_id;
     const session = await getReactionModSession(userId);
     if (!session || session.moderationMessageId !== modMessageId) {
-      await ctx.answerCallbackQuery({ text: "Уже обработано или устарело" });
+      await safeAnswer(ctx, { text: "Уже обработано или устарело" });
       return;
     }
 
     const replyToMessageId = session.lastDiscussionMessageId;
 
     if (kind === "k") {
-      await ctx.answerCallbackQuery({ text: "Ок" }).catch(() => {});
+      await safeAnswer(ctx, { text: "Ок" });
       try {
         await ctx.api.editMessageText(
           config.moderationChatId,
@@ -52,7 +68,7 @@ export function registerModerationCallbacks(bot: Bot): void {
       return;
     }
 
-    await ctx.answerCallbackQuery().catch(() => {});
+    await safeAnswer(ctx);
 
     try {
       const member = await ctx.api.getChatMember(config.chatId, userId);
