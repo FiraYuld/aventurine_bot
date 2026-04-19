@@ -34,6 +34,20 @@ function key(userId: number): string {
   return `reactmod:${userId}`;
 }
 
+function leaveAloneKey(userId: number): string {
+  return `reactleave:${userId}`;
+}
+
+/** Модератор нажал «Оставить» — не эскалировать по реакциям, пока не истечёт TTL. */
+export async function setReactionLeaveAlone(userId: number, ttlSec: number): Promise<void> {
+  await getRedis().set(leaveAloneKey(userId), "1", { ex: ttlSec });
+}
+
+export async function isReactionLeaveAlone(userId: number): Promise<boolean> {
+  const v: unknown = await getRedis().get(leaveAloneKey(userId));
+  return v != null && v !== "";
+}
+
 export async function getReactionModSession(userId: number): Promise<ReactionModSession | null> {
   const raw: unknown = await getRedis().get(key(userId));
   if (raw == null || raw === "") return null;

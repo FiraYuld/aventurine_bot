@@ -31,6 +31,11 @@ function loadConfig() {
     reactionAutoBanWindowMs: 60_000,
     /** TTL ключа сессии в Redis (сек), чуть больше окна */
     reactionModSessionTtlSec: 120,
+    /**
+     * После кнопки «Оставить» не считать реакции этого пользователя под автомодерацию
+     * (карточки и автобан по 2+ реакциям), пока ключ живёт в Redis.
+     */
+    reactionLeaveAloneTtlSec: 7 * 24 * 60 * 60,
   } as const;
 }
 

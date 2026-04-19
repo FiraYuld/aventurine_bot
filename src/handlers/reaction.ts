@@ -10,6 +10,7 @@ import { executeReactionBan } from "../post-ban.js";
 import {
   deleteReactionModSession,
   getReactionModSession,
+  isReactionLeaveAlone,
   setReactionModSession,
 } from "../reaction-mod-session.js";
 
@@ -86,6 +87,25 @@ export function registerReactionHandler(bot: Bot): void {
 
       const risk = await computeRisk(ctx.api, user);
       if (!risk.shouldBan) return;
+
+      if (await isReactionLeaveAlone(user.id)) {
+        // #region agent log
+        fetch("http://127.0.0.1:7458/ingest/15bbcc9f-06b6-4a51-a8b8-fecc59d94e52", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "bd3606" },
+          body: JSON.stringify({
+            sessionId: "bd3606",
+            runId: "leave-alone",
+            hypothesisId: "H2",
+            location: "reaction.ts:skip-leave-alone",
+            message: "skip reaction mod path (leave-alone)",
+            data: { userId: user.id, message_id },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
+        return;
+      }
 
       const now = Date.now();
       const windowMs = config.reactionAutoBanWindowMs;

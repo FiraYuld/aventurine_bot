@@ -8,6 +8,7 @@ import { executeReactionBan } from "../post-ban.js";
 import {
   deleteReactionModSession,
   getReactionModSession,
+  setReactionLeaveAlone,
 } from "../reaction-mod-session.js";
 
 async function safeAnswer(
@@ -55,13 +56,29 @@ export function registerModerationCallbacks(bot: Bot): void {
         await ctx.api.editMessageText(
           config.moderationChatId,
           modMessageId,
-          `✅ <b>Оставили</b>\n\nПользователь <code>${userId}</code> — без бана.`,
+          `✅ <b>Оставили</b>\n\nПользователь <code>${userId}</code> — без бана. Дальнейшие реакции по этому правилу не считаются (ограниченное время).`,
           {
             parse_mode: "HTML",
             reply_markup: { inline_keyboard: [] },
           },
         );
         await deleteReactionModSession(userId);
+        await setReactionLeaveAlone(userId, config.reactionLeaveAloneTtlSec);
+        // #region agent log
+        fetch("http://127.0.0.1:7458/ingest/15bbcc9f-06b6-4a51-a8b8-fecc59d94e52", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "bd3606" },
+          body: JSON.stringify({
+            sessionId: "bd3606",
+            runId: "leave-alone",
+            hypothesisId: "H1",
+            location: "moderation-callbacks.ts:leave",
+            message: "setReactionLeaveAlone after Оставить",
+            data: { userId, ttlSec: config.reactionLeaveAloneTtlSec },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
       } catch (err) {
         await logError(ctx.api, "правка сообщения «оставили»", err);
       }
