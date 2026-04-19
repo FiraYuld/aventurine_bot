@@ -48,6 +48,14 @@ export async function isReactionLeaveAlone(userId: number): Promise<boolean> {
   return v != null && v !== "";
 }
 
+/** Снять иммунитет после «Оставить» (для тестов / ручного сброса). @returns был ли ключ */
+export async function clearReactionLeaveAlone(userId: number): Promise<boolean> {
+  const had = await isReactionLeaveAlone(userId);
+  if (!had) return false;
+  await getRedis().del(leaveAloneKey(userId));
+  return true;
+}
+
 export async function getReactionModSession(userId: number): Promise<ReactionModSession | null> {
   const raw: unknown = await getRedis().get(key(userId));
   if (raw == null || raw === "") return null;

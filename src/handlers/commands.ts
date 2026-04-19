@@ -1,6 +1,7 @@
 import type { Bot } from "grammy";
 import { config } from "../config.js";
 import { isAdminAnywhere } from "../moderation.js";
+import { clearReactionLeaveAlone } from "../reaction-mod-session.js";
 
 function isOwner(userId: number): boolean {
   return userId === config.adminLogChatId;
@@ -18,6 +19,7 @@ const HELP_TEXT = `
 
 Команды:
 /ping, /status, /start, /help — только владелец (ADMIN_LOG_CHAT_ID).
+/clear_react_leave user_id — только владелец: снять иммунитет после кнопки «Оставить».
 /unban — владелец или администраторы канала/чата обсуждения.
 `.trim();
 
@@ -72,6 +74,25 @@ export function registerCommands(bot: Bot): void {
     }
 
     await ctx.reply(checks.join("\n\n"), { parse_mode: "HTML" });
+  });
+
+  bot.command("clear_react_leave", async (ctx) => {
+    if (!ctx.from || !isOwner(ctx.from.id)) return;
+
+    const arg = ctx.match?.toString().trim();
+    const userId = Number(arg);
+    if (!arg || !Number.isInteger(userId) || userId <= 0) {
+      await ctx.reply("Использование: /clear_react_leave user_id (положительное число)");
+      return;
+    }
+
+    const had = await clearReactionLeaveAlone(userId);
+    await ctx.reply(
+      had
+        ? `Иммунитет после «Оставить» снят для <code>${userId}</code>.`
+        : `Для <code>${userId}</code> не было активного иммунитета.`,
+      { parse_mode: "HTML" },
+    );
   });
 
   bot.command("unban", async (ctx) => {
