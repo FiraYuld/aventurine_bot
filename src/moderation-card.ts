@@ -14,8 +14,8 @@ export function buildPendingModerationText(
 ): string {
   const strikesLine =
     strikeCount > 1
-      ? `\n\nРеакций подряд на <b>этом же сообщении</b>: <b>${strikeCount}</b> (при <b>2</b> за <b>${windowSec} с</b> — автобан)`
-      : `\n\nРеакций подряд на <b>этом же сообщении</b>: <b>1</b> (при <b>2</b> за <b>${windowSec} с</b> — автобан)`;
+      ? `\n\nРеакций подряд: <b>${strikeCount}</b> (при <b>2</b> за <b>${windowSec} с</b> с первой — автобан)`
+      : `\n\nРеакций подряд: <b>1</b> (при <b>2</b> за <b>${windowSec} с</b> с первой — автобан)`;
   return (
     `⚠️ <b>Подозрительная реакция</b>\n\n` +
     `Пользователь: ${formatUserLine(user)}\n\n` +

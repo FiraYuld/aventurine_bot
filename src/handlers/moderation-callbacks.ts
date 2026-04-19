@@ -1,6 +1,5 @@
 import type { Bot } from "grammy";
 import { config } from "../config.js";
-import { agentDebugLog } from "../debug-agent-log.js";
 import { logError } from "../logger.js";
 import { computeRisk } from "../moderation.js";
 import { parseReactionModCallback } from "../moderation-card.js";
@@ -12,22 +11,13 @@ import {
 
 export function registerModerationCallbacks(bot: Bot): void {
   bot.callbackQuery(/^([bk]):\d+:\d+$/, async (ctx) => {
-    // #region agent log
-    agentDebugLog({
-      hypothesisId: "H2",
-      location: "moderation-callbacks.ts:entry",
-      message: "callback handler matched regex",
-      data: { data: ctx.callbackQuery.data },
-    });
-    // #endregion
-
     const parsed = parseReactionModCallback(ctx.callbackQuery.data);
     if (!parsed) {
       await ctx.answerCallbackQuery();
       return;
     }
 
-    const { kind, userId, discussionMessageId: anchorDiscussionMessageId } = parsed;
+    const { kind, userId } = parsed;
     const msg = ctx.callbackQuery.message;
     if (!msg || !("message_id" in msg)) {
       await ctx.answerCallbackQuery({ text: "Нет сообщения" });
@@ -35,20 +25,7 @@ export function registerModerationCallbacks(bot: Bot): void {
     }
 
     const modMessageId = msg.message_id;
-    const session = await getReactionModSession(userId, anchorDiscussionMessageId);
-    // #region agent log
-    agentDebugLog({
-      hypothesisId: "H5",
-      location: "moderation-callbacks.ts:after_redis",
-      message: "session for callback",
-      data: {
-        userId,
-        modMessageId,
-        hasSession: Boolean(session),
-        sessionModMsgId: session?.moderationMessageId,
-      },
-    });
-    // #endregion
+    const session = await getReactionModSession(userId);
     if (!session || session.moderationMessageId !== modMessageId) {
       await ctx.answerCallbackQuery({ text: "Уже обработано или устарело" });
       return;
@@ -57,6 +34,7 @@ export function registerModerationCallbacks(bot: Bot): void {
     const replyToMessageId = session.lastDiscussionMessageId;
 
     if (kind === "k") {
+      await ctx.answerCallbackQuery({ text: "Ок" }).catch(() => {});
       try {
         await ctx.api.editMessageText(
           config.moderationChatId,
@@ -67,13 +45,14 @@ export function registerModerationCallbacks(bot: Bot): void {
             reply_markup: { inline_keyboard: [] },
           },
         );
-        await deleteReactionModSession(userId, anchorDiscussionMessageId);
+        await deleteReactionModSession(userId);
       } catch (err) {
         await logError(ctx.api, "правка сообщения «оставили»", err);
       }
-      await ctx.answerCallbackQuery({ text: "Ок" });
       return;
     }
+
+    await ctx.answerCallbackQuery().catch(() => {});
 
     try {
       const member = await ctx.api.getChatMember(config.chatId, userId);
@@ -89,11 +68,10 @@ export function registerModerationCallbacks(bot: Bot): void {
               reply_markup: { inline_keyboard: [] },
             },
           );
-          await deleteReactionModSession(userId, anchorDiscussionMessageId);
+          await deleteReactionModSession(userId);
         } catch (err) {
           await logError(ctx.api, "правка сообщения «не баним»", err);
         }
-        await ctx.answerCallbackQuery({ text: "Уже не под подозрением" });
         return;
       }
 
@@ -110,19 +88,9 @@ export function registerModerationCallbacks(bot: Bot): void {
         reactionEvents: session.reactionEvents,
         replaceModerationMessageId: modMessageId,
       });
-      await deleteReactionModSession(userId, anchorDiscussionMessageId);
-      // #region agent log
-      agentDebugLog({
-        hypothesisId: "H2",
-        location: "moderation-callbacks.ts:before_answer",
-        message: "ban path completed, answering callback",
-        data: { userId },
-      });
-      // #endregion
-      await ctx.answerCallbackQuery({ text: "Забанен" });
+      await deleteReactionModSession(userId);
     } catch (err) {
       await logError(ctx.api, "callback «забанить»", err);
-      await ctx.answerCallbackQuery({ text: "Ошибка", show_alert: true });
     }
   });
 }

@@ -1,6 +1,5 @@
 import type { Context, NextFunction } from "grammy";
 import { config } from "../config.js";
-import { agentDebugLog } from "../debug-agent-log.js";
 
 /**
  * Личка владельца, чат обсуждения (CHAT_ID), чат модерации (MODERATION_CHAT_ID),
@@ -15,26 +14,22 @@ export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise
 
   const cq = ctx.callbackQuery;
   if (cq) {
-    const chatId = cq.message && "chat" in cq.message ? cq.message.chat.id : undefined;
-    if (chatId !== config.moderationChatId) {
-      // #region agent log
-      agentDebugLog({
-        hypothesisId: "H1",
-        location: "scope.ts:callback_blocked",
-        message: "callback_query not forwarded to handlers",
-        data: { chatId, expectedModerationChatId: config.moderationChatId, dataLen: cq.data?.length },
-      });
-      // #endregion
+    const msg = cq.message;
+    const chatId =
+      msg && "chat" in msg && msg.chat !== undefined ? (msg.chat as { id: number }).id : undefined;
+
+    if (chatId === undefined) {
+      await ctx.answerCallbackQuery({ text: "Нет данных чата" }).catch(() => {});
       return;
     }
-    // #region agent log
-    agentDebugLog({
-      hypothesisId: "H1",
-      location: "scope.ts:callback_ok",
-      message: "callback_query passed scope",
-      data: { chatId },
-    });
-    // #endregion
+
+    const expected = config.moderationChatId;
+    if (chatId !== expected) {
+      console.error("[scope] callback_query ignored", { chatId, expectedModerationChatId: expected });
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+
     return next();
   }
 

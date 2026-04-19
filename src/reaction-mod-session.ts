@@ -11,7 +11,7 @@ export interface ReactionModSession {
   strikeCount: number;
   firstAt: number;
   lastDiscussionMessageId: number;
-  /** Все зафиксированные реакции в этой сессии (одно сообщение в чате обсуждения) */
+  /** Все зафиксированные реакции в этой сессии (в т.ч. по разным сообщениям) */
   reactionEvents?: ReactionModEvent[];
   /** Причины риска на момент первой реакции в сессии */
   reasons?: string[];
@@ -30,17 +30,13 @@ function getRedis(): Redis {
   return redis;
 }
 
-function key(userId: number, discussionMessageId: number): string {
-  return `reactmod:${userId}:${discussionMessageId}`;
+function key(userId: number): string {
+  return `reactmod:${userId}`;
 }
 
-export async function getReactionModSession(
-  userId: number,
-  discussionMessageId: number,
-): Promise<ReactionModSession | null> {
-  const raw: unknown = await getRedis().get(key(userId, discussionMessageId));
+export async function getReactionModSession(userId: number): Promise<ReactionModSession | null> {
+  const raw: unknown = await getRedis().get(key(userId));
   if (raw == null || raw === "") return null;
-  // Upstash по умолчанию парсит JSON — приходит объект, а не строка
   if (typeof raw === "object" && raw !== null && "moderationMessageId" in raw) {
     return raw as ReactionModSession;
   }
@@ -56,16 +52,12 @@ export async function getReactionModSession(
 
 export async function setReactionModSession(
   userId: number,
-  discussionMessageId: number,
   session: ReactionModSession,
   ttlSec: number,
 ): Promise<void> {
-  await getRedis().set(key(userId, discussionMessageId), JSON.stringify(session), { ex: ttlSec });
+  await getRedis().set(key(userId), JSON.stringify(session), { ex: ttlSec });
 }
 
-export async function deleteReactionModSession(
-  userId: number,
-  discussionMessageId: number,
-): Promise<void> {
-  await getRedis().del(key(userId, discussionMessageId));
+export async function deleteReactionModSession(userId: number): Promise<void> {
+  await getRedis().del(key(userId));
 }

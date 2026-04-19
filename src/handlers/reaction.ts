@@ -1,6 +1,5 @@
 import type { Bot } from "grammy";
 import { config } from "../config.js";
-import { agentDebugLog } from "../debug-agent-log.js";
 import { logError, logInfo } from "../logger.js";
 import {
   buildPendingModerationText,
@@ -25,7 +24,6 @@ function reactionEmojis(
   });
 }
 
-/** Снимок набора реакций для сравнения «поменял эмодзи, длина та же» */
 function reactionSetSignature(
   reactions: ReadonlyArray<{ type: string; emoji?: string; custom_emoji_id?: string }>,
 ): string {
@@ -35,7 +33,6 @@ function reactionSetSignature(
     .join("|");
 }
 
-/** Добавили реакцию или заменили на другую (без учёта чистого снятия) */
 function shouldProcessReactionChange(
   newR: ReadonlyArray<{ type: string; emoji?: string; custom_emoji_id?: string }>,
   oldR: ReadonlyArray<{ type: string; emoji?: string; custom_emoji_id?: string }>,
@@ -54,19 +51,6 @@ export function registerReactionHandler(bot: Bot): void {
     if (chat.id !== config.chatId) return;
 
     if (!shouldProcessReactionChange(new_reaction, old_reaction)) {
-      // #region agent log
-      agentDebugLog({
-        hypothesisId: "H4",
-        location: "reaction.ts:reaction_change_gate",
-        message: "skipped: no add nor emoji swap",
-        data: {
-          message_id,
-          userId: user?.id,
-          newLen: new_reaction.length,
-          oldLen: old_reaction.length,
-        },
-      });
-      // #endregion
       return;
     }
 
@@ -108,26 +92,11 @@ export function registerReactionHandler(bot: Bot): void {
       const windowSec = Math.round(windowMs / 1000);
       const ttlSec = config.reactionModSessionTtlSec;
 
-      let session = await getReactionModSession(user.id, message_id);
+      let session = await getReactionModSession(user.id);
       if (session && now - session.firstAt > windowMs) {
-        await deleteReactionModSession(user.id, message_id);
+        await deleteReactionModSession(user.id);
         session = null;
       }
-
-      // #region agent log
-      agentDebugLog({
-        hypothesisId: "H5",
-        location: "reaction.ts:session_snapshot",
-        message: "risk session state",
-        data: {
-          userId: user.id,
-          message_id,
-          hasSession: Boolean(session),
-          strike: session?.strikeCount,
-          firstAtAgeMs: session ? now - session.firstAt : undefined,
-        },
-      });
-      // #endregion
 
       const thisEvent = { messageId: message_id, emojis: reactionEmojis(new_reaction) };
 
@@ -139,34 +108,20 @@ export function registerReactionHandler(bot: Bot): void {
           link_preview_options: { is_disabled: true },
           reply_markup: keyboard,
         });
-        await setReactionModSession(
-          user.id,
-          message_id,
-          {
-            moderationMessageId: sent.message_id,
-            strikeCount: 1,
-            firstAt: now,
-            lastDiscussionMessageId: message_id,
-            reasons: risk.reasons,
-            reactionEvents: [thisEvent],
-          },
-          ttlSec,
-        );
+        await setReactionModSession(user.id, {
+          moderationMessageId: sent.message_id,
+          strikeCount: 1,
+          firstAt: now,
+          lastDiscussionMessageId: message_id,
+          reasons: risk.reasons,
+          reactionEvents: [thisEvent],
+        }, ttlSec);
         return;
       }
 
       const strikeCount = session.strikeCount + 1;
       const lastDiscussionMessageId = message_id;
       const reactionEvents = [...(session.reactionEvents ?? []), thisEvent];
-
-      // #region agent log
-      agentDebugLog({
-        hypothesisId: "H4",
-        location: "reaction.ts:strike_increment",
-        message: "incrementing strike path",
-        data: { userId: user.id, strikeCount, windowMs },
-      });
-      // #endregion
 
       if (strikeCount >= 2 && now - session.firstAt <= windowMs) {
         await executeReactionBan({
@@ -179,7 +134,7 @@ export function registerReactionHandler(bot: Bot): void {
           reactionEvents,
           replaceModerationMessageId: session.moderationMessageId,
         });
-        await deleteReactionModSession(user.id, message_id);
+        await deleteReactionModSession(user.id);
         return;
       }
 
@@ -189,7 +144,7 @@ export function registerReactionHandler(bot: Bot): void {
         lastDiscussionMessageId,
         reactionEvents,
       };
-      await setReactionModSession(user.id, message_id, next, ttlSec);
+      await setReactionModSession(user.id, next, ttlSec);
 
       const editText = buildPendingModerationText(user, risk.reasons, strikeCount, windowSec);
       const editKb = pendingModerationKeyboard(user.id, lastDiscussionMessageId);
