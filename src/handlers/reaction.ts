@@ -25,6 +25,27 @@ function reactionEmojis(
   });
 }
 
+/** Снимок набора реакций для сравнения «поменял эмодзи, длина та же» */
+function reactionSetSignature(
+  reactions: ReadonlyArray<{ type: string; emoji?: string; custom_emoji_id?: string }>,
+): string {
+  return [...reactions]
+    .map((r) => `${r.type}:${r.emoji ?? ""}:${r.custom_emoji_id ?? ""}`)
+    .sort()
+    .join("|");
+}
+
+/** Добавили реакцию или заменили на другую (без учёта чистого снятия) */
+function shouldProcessReactionChange(
+  newR: ReadonlyArray<{ type: string; emoji?: string; custom_emoji_id?: string }>,
+  oldR: ReadonlyArray<{ type: string; emoji?: string; custom_emoji_id?: string }>,
+): boolean {
+  if (newR.length > oldR.length) return true;
+  if (newR.length < oldR.length) return false;
+  if (newR.length === 0) return false;
+  return reactionSetSignature(newR) !== reactionSetSignature(oldR);
+}
+
 export function registerReactionHandler(bot: Bot): void {
   bot.on("message_reaction", async (ctx) => {
     const update = ctx.messageReaction;
@@ -32,12 +53,12 @@ export function registerReactionHandler(bot: Bot): void {
 
     if (chat.id !== config.chatId) return;
 
-    if (new_reaction.length <= old_reaction.length) {
+    if (!shouldProcessReactionChange(new_reaction, old_reaction)) {
       // #region agent log
       agentDebugLog({
         hypothesisId: "H4",
-        location: "reaction.ts:reaction_len_gate",
-        message: "skipped: new_reaction length not greater than old",
+        location: "reaction.ts:reaction_change_gate",
+        message: "skipped: no add nor emoji swap",
         data: {
           message_id,
           userId: user?.id,

@@ -28,13 +28,20 @@ function key(userId: number): string {
 }
 
 export async function getReactionModSession(userId: number): Promise<ReactionModSession | null> {
-  const raw = await getRedis().get<string>(key(userId));
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as ReactionModSession;
-  } catch {
-    return null;
+  const raw: unknown = await getRedis().get(key(userId));
+  if (raw == null || raw === "") return null;
+  // Upstash по умолчанию парсит JSON — приходит объект, а не строка
+  if (typeof raw === "object" && raw !== null && "moderationMessageId" in raw) {
+    return raw as ReactionModSession;
   }
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as ReactionModSession;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 export async function setReactionModSession(
