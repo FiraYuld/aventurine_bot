@@ -27,7 +27,7 @@ export function registerModerationCallbacks(bot: Bot): void {
       return;
     }
 
-    const { kind, userId } = parsed;
+    const { kind, userId, discussionMessageId: anchorDiscussionMessageId } = parsed;
     const msg = ctx.callbackQuery.message;
     if (!msg || !("message_id" in msg)) {
       await ctx.answerCallbackQuery({ text: "Нет сообщения" });
@@ -35,7 +35,7 @@ export function registerModerationCallbacks(bot: Bot): void {
     }
 
     const modMessageId = msg.message_id;
-    const session = await getReactionModSession(userId);
+    const session = await getReactionModSession(userId, anchorDiscussionMessageId);
     // #region agent log
     agentDebugLog({
       hypothesisId: "H5",
@@ -67,7 +67,7 @@ export function registerModerationCallbacks(bot: Bot): void {
             reply_markup: { inline_keyboard: [] },
           },
         );
-        await deleteReactionModSession(userId);
+        await deleteReactionModSession(userId, anchorDiscussionMessageId);
       } catch (err) {
         await logError(ctx.api, "правка сообщения «оставили»", err);
       }
@@ -89,7 +89,7 @@ export function registerModerationCallbacks(bot: Bot): void {
               reply_markup: { inline_keyboard: [] },
             },
           );
-          await deleteReactionModSession(userId);
+          await deleteReactionModSession(userId, anchorDiscussionMessageId);
         } catch (err) {
           await logError(ctx.api, "правка сообщения «не баним»", err);
         }
@@ -107,9 +107,10 @@ export function registerModerationCallbacks(bot: Bot): void {
         reasons: reasonsForLog,
         discussionMessageId: replyToMessageId,
         logTitle: "Бан по кнопке",
+        reactionEvents: session.reactionEvents,
         replaceModerationMessageId: modMessageId,
       });
-      await deleteReactionModSession(userId);
+      await deleteReactionModSession(userId, anchorDiscussionMessageId);
       // #region agent log
       agentDebugLog({
         hypothesisId: "H2",

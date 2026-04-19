@@ -1,7 +1,7 @@
 import type { Api } from "grammy";
 import type { User } from "grammy/types";
 import { config } from "./config.js";
-import { buildBanLogHtml, logBan, logError } from "./logger.js";
+import { buildBanLogHtml, logBan, logError, type ReactionEventLog } from "./logger.js";
 import { banEverywhere } from "./moderation.js";
 
 export const BAN_CATCHPHRASE = "Схватил бота за жёпу!";
@@ -25,7 +25,12 @@ async function sendOrEditBanLog(
   api: Api,
   user: User,
   reasons: string[],
-  extra: { messageId?: number; reactionEmojis?: string[]; title?: string },
+  extra: {
+    messageId?: number;
+    reactionEmojis?: string[];
+    reactionEvents?: ReactionEventLog[];
+    title?: string;
+  },
   replaceInModeration?: { messageId: number },
 ): Promise<void> {
   const text = buildBanLogHtml(user, reasons, extra);
@@ -53,6 +58,7 @@ export async function executeReactionBan(params: {
   discussionMessageId: number;
   logTitle: BanLogTitle;
   reactionEmojis?: string[];
+  reactionEvents?: ReactionEventLog[];
   /** Если задано — правим карточку очереди вместо нового сообщения */
   replaceModerationMessageId?: number;
 }): Promise<{ errors: string[] }> {
@@ -64,6 +70,7 @@ export async function executeReactionBan(params: {
     {
       messageId: params.discussionMessageId,
       reactionEmojis: params.reactionEmojis,
+      reactionEvents: params.reactionEvents,
       title: params.logTitle,
     },
     params.replaceModerationMessageId !== undefined

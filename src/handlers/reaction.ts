@@ -89,7 +89,7 @@ export function registerReactionHandler(bot: Bot): void {
           reasons: ["бот-аккаунт"],
           discussionMessageId: message_id,
           logTitle: "Бан бот-аккаунт",
-          reactionEmojis: reactionEmojis(new_reaction),
+          reactionEvents: [{ messageId: message_id, emojis: reactionEmojis(new_reaction) }],
         });
       } catch (err) {
         await logError(ctx.api, "обработка реакции бота", err);
@@ -108,9 +108,9 @@ export function registerReactionHandler(bot: Bot): void {
       const windowSec = Math.round(windowMs / 1000);
       const ttlSec = config.reactionModSessionTtlSec;
 
-      let session = await getReactionModSession(user.id);
+      let session = await getReactionModSession(user.id, message_id);
       if (session && now - session.firstAt > windowMs) {
-        await deleteReactionModSession(user.id);
+        await deleteReactionModSession(user.id, message_id);
         session = null;
       }
 
@@ -129,6 +129,8 @@ export function registerReactionHandler(bot: Bot): void {
       });
       // #endregion
 
+      const thisEvent = { messageId: message_id, emojis: reactionEmojis(new_reaction) };
+
       if (!session) {
         const text = buildPendingModerationText(user, risk.reasons, 1, windowSec);
         const keyboard = pendingModerationKeyboard(user.id, message_id);
@@ -139,12 +141,14 @@ export function registerReactionHandler(bot: Bot): void {
         });
         await setReactionModSession(
           user.id,
+          message_id,
           {
             moderationMessageId: sent.message_id,
             strikeCount: 1,
             firstAt: now,
             lastDiscussionMessageId: message_id,
             reasons: risk.reasons,
+            reactionEvents: [thisEvent],
           },
           ttlSec,
         );
@@ -153,6 +157,7 @@ export function registerReactionHandler(bot: Bot): void {
 
       const strikeCount = session.strikeCount + 1;
       const lastDiscussionMessageId = message_id;
+      const reactionEvents = [...(session.reactionEvents ?? []), thisEvent];
 
       // #region agent log
       agentDebugLog({
@@ -171,10 +176,10 @@ export function registerReactionHandler(bot: Bot): void {
           reasons: session.reasons && session.reasons.length > 0 ? session.reasons : risk.reasons,
           discussionMessageId: lastDiscussionMessageId,
           logTitle: "Автобан",
-          reactionEmojis: reactionEmojis(new_reaction),
+          reactionEvents,
           replaceModerationMessageId: session.moderationMessageId,
         });
-        await deleteReactionModSession(user.id);
+        await deleteReactionModSession(user.id, message_id);
         return;
       }
 
@@ -182,8 +187,9 @@ export function registerReactionHandler(bot: Bot): void {
         ...session,
         strikeCount,
         lastDiscussionMessageId,
+        reactionEvents,
       };
-      await setReactionModSession(user.id, next, ttlSec);
+      await setReactionModSession(user.id, message_id, next, ttlSec);
 
       const editText = buildPendingModerationText(user, risk.reasons, strikeCount, windowSec);
       const editKb = pendingModerationKeyboard(user.id, lastDiscussionMessageId);

@@ -1,11 +1,18 @@
 import { Redis } from "@upstash/redis";
 import { getConfig } from "./config.js";
 
+export interface ReactionModEvent {
+  messageId: number;
+  emojis: string[];
+}
+
 export interface ReactionModSession {
   moderationMessageId: number;
   strikeCount: number;
   firstAt: number;
   lastDiscussionMessageId: number;
+  /** Все зафиксированные реакции в этой сессии (одно сообщение в чате обсуждения) */
+  reactionEvents?: ReactionModEvent[];
   /** Причины риска на момент первой реакции в сессии */
   reasons?: string[];
 }
@@ -23,12 +30,15 @@ function getRedis(): Redis {
   return redis;
 }
 
-function key(userId: number): string {
-  return `reactmod:${userId}`;
+function key(userId: number, discussionMessageId: number): string {
+  return `reactmod:${userId}:${discussionMessageId}`;
 }
 
-export async function getReactionModSession(userId: number): Promise<ReactionModSession | null> {
-  const raw: unknown = await getRedis().get(key(userId));
+export async function getReactionModSession(
+  userId: number,
+  discussionMessageId: number,
+): Promise<ReactionModSession | null> {
+  const raw: unknown = await getRedis().get(key(userId, discussionMessageId));
   if (raw == null || raw === "") return null;
   // Upstash по умолчанию парсит JSON — приходит объект, а не строка
   if (typeof raw === "object" && raw !== null && "moderationMessageId" in raw) {
@@ -46,12 +56,16 @@ export async function getReactionModSession(userId: number): Promise<ReactionMod
 
 export async function setReactionModSession(
   userId: number,
+  discussionMessageId: number,
   session: ReactionModSession,
   ttlSec: number,
 ): Promise<void> {
-  await getRedis().set(key(userId), JSON.stringify(session), { ex: ttlSec });
+  await getRedis().set(key(userId, discussionMessageId), JSON.stringify(session), { ex: ttlSec });
 }
 
-export async function deleteReactionModSession(userId: number): Promise<void> {
-  await getRedis().del(key(userId));
+export async function deleteReactionModSession(
+  userId: number,
+  discussionMessageId: number,
+): Promise<void> {
+  await getRedis().del(key(userId, discussionMessageId));
 }

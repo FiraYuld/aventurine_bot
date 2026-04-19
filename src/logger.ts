@@ -9,6 +9,13 @@ export function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
+/** Публичная ссылка на сообщение в супергруппе / канале с обсуждением (t.me/c/…) */
+export function discussionPostPublicLink(chatId: number, messageId: number): string {
+  const s = String(chatId);
+  const slug = s.startsWith("-100") ? s.slice(4) : s.replace(/^-/, "");
+  return `https://t.me/c/${slug}/${messageId}`;
+}
+
 export function formatUserLine(user: User): string {
   const name = [user.first_name, user.last_name].filter(Boolean).join(" ");
   const safeName = escapeHtml(name || "(без имени)");
@@ -17,19 +24,43 @@ export function formatUserLine(user: User): string {
   return `${link}${username} <code>${user.id}</code>`;
 }
 
+export type ReactionEventLog = { messageId: number; emojis: string[] };
+
 export function buildBanLogHtml(
   user: User,
   reasons: string[],
-  extra?: { messageId?: number; reactionEmojis?: string[]; title?: string },
+  extra?: {
+    messageId?: number;
+    reactionEmojis?: string[];
+    reactionEvents?: ReactionEventLog[];
+    title?: string;
+  },
 ): string {
   const title = extra?.title ?? "Бан по реакции";
   const reasonsList = reasons.map((r) => `• ${escapeHtml(r)}`).join("\n");
-  const reactions =
-    extra?.reactionEmojis && extra.reactionEmojis.length > 0
-      ? `\n\nРеакция: ${extra.reactionEmojis.map(escapeHtml).join(" ")}`
-      : "";
+
+  let reactionsBlock = "";
+  if (extra?.reactionEvents && extra.reactionEvents.length > 0) {
+    const lines = extra.reactionEvents.map((ev) => {
+      const url = discussionPostPublicLink(config.chatId, ev.messageId);
+      const em = ev.emojis.map(escapeHtml).join(" ");
+      return `• <a href="${url}">сообщение ${escapeHtml(String(ev.messageId))}</a>: ${em}`;
+    });
+    reactionsBlock = `\n\nРеакции:\n${lines.join("\n")}`;
+  } else if (extra?.reactionEmojis && extra.reactionEmojis.length > 0) {
+    reactionsBlock = `\n\nРеакция: ${extra.reactionEmojis.map(escapeHtml).join(" ")}`;
+    if (extra.messageId !== undefined) {
+      const url = discussionPostPublicLink(config.chatId, extra.messageId);
+      reactionsBlock += `\n<a href="${url}">Перейти к сообщению</a>`;
+    }
+  }
+
+  const hasEventList = Boolean(extra?.reactionEvents && extra.reactionEvents.length > 0);
+  const hasEmojiWithLink =
+    Boolean(extra?.reactionEmojis && extra.reactionEmojis.length > 0) &&
+    extra?.messageId !== undefined;
   const messageRef =
-    extra?.messageId !== undefined
+    extra?.messageId !== undefined && !hasEventList && !hasEmojiWithLink
       ? `\nСообщение в чате: <code>${extra.messageId}</code>`
       : "";
 
@@ -37,7 +68,7 @@ export function buildBanLogHtml(
     `🚫 <b>${escapeHtml(title)}</b>\n\n` +
     `Пользователь: ${formatUserLine(user)}\n\n` +
     `Причины:\n${reasonsList}` +
-    reactions +
+    reactionsBlock +
     messageRef
   );
 }
@@ -46,7 +77,12 @@ export async function logBan(
   api: Api,
   user: User,
   reasons: string[],
-  extra?: { messageId?: number; reactionEmojis?: string[]; title?: string },
+  extra?: {
+    messageId?: number;
+    reactionEmojis?: string[];
+    reactionEvents?: ReactionEventLog[];
+    title?: string;
+  },
 ): Promise<void> {
   const text = buildBanLogHtml(user, reasons, extra);
 

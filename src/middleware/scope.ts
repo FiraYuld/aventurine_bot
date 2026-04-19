@@ -3,8 +3,8 @@ import { config } from "../config.js";
 import { agentDebugLog } from "../debug-agent-log.js";
 
 /**
- * Личка владельца (ADMIN_LOG_CHAT_ID = user id), чат обсуждения (CHAT_ID),
- * callback из чата модерации (MODERATION_CHAT_ID). Остальное — игнор.
+ * Личка владельца, чат обсуждения (CHAT_ID), чат модерации (MODERATION_CHAT_ID),
+ * callback из чата модерации. Остальное — игнор.
  */
 export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise<void> {
   const mr = ctx.messageReaction;
@@ -48,8 +48,10 @@ export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise
   }
 
   if (chat.type === "group" || chat.type === "supergroup") {
-    if (chat.id !== config.chatId) return;
-    return next();
+    if (chat.id === config.chatId || chat.id === config.moderationChatId) {
+      return next();
+    }
+    return;
   }
 
   // Каналы и прочее — не обрабатываем
