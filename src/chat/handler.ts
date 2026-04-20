@@ -263,10 +263,6 @@ function postProcessReply(raw: string): string {
   s = s.replace(/[—–]/g, "-");
   // Чуть менее «идеальная» пунктуация: убираем часть запятых.
   s = s.replace(/,\s+/g, " ");
-  // Понижаем регистр первой буквы.
-  if (s.length > 0) s = s[0]!.toLowerCase() + s.slice(1);
-  // Не заканчиваем «канцелярской» точкой.
-  s = s.replace(/\.\s*$/g, "");
   // Жёстко режем многословие: максимум 2 предложения.
   s = s
     .split(/(?<=[.!?])\s+/)
@@ -274,6 +270,15 @@ function postProcessReply(raw: string): string {
     .slice(0, 2)
     .join(" ")
     .trim();
+  // Понижаем регистр первой буквы.
+  if (s.length > 0) s = s[0]!.toLowerCase() + s.slice(1);
+  // Почти полностью режем пунктуацию.
+  const isQuestion = /\?\s*$/.test(s) || /^\s*(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|чё|че)\b/i.test(s);
+  s = s.replace(/[!.,;:()"«»'”“]/g, "");
+  s = s.replace(/\s{2,}/g, " ").trim();
+  // Вопросительный знак ставим только если это похоже на вопрос.
+  s = s.replace(/\?+$/g, "");
+  if (isQuestion) s = s + "?";
   // Жёсткий потолок длины — Telegram и так ограничивает ~4096, но лучше короче.
   if (s.length > 240) s = s.slice(0, 240).trimEnd() + "…";
   return s;
