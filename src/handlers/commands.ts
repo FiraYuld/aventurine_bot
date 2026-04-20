@@ -2,6 +2,17 @@ import type { Bot } from "grammy";
 import { config } from "../config.js";
 import { isAdminAnywhere } from "../moderation.js";
 import { clearReactionLeaveAlone } from "../reaction-mod-session.js";
+import {
+  currentDateKey,
+  getGlobalMessageCounter,
+  getRandomUsed,
+  getUserUsed,
+  resetGlobalMessageCounterForToday,
+  resetRandomQuotaForToday,
+  resetUserLimitNoticeForToday,
+  resetUserQuotaForToday,
+  ttlUntilMidnightSec,
+} from "../chat/limits.js";
 
 function isOwner(userId: number): boolean {
   return userId === config.adminLogChatId;
@@ -19,6 +30,8 @@ const HELP_TEXT = `
 
 Команды:
 /ping, /status, /start, /help — только владелец (ADMIN_LOG_CHAT_ID).
+/limits [user_id] — только владелец: показать суточные LLM-лимиты (сегодня).
+/limits_reset [user_id] — только владелец: сбросить суточные LLM-лимиты (сегодня).
 /clear_react_leave user_id — только владелец: снять иммунитет после кнопки «Оставить».
 /unban — владелец или администраторы канала/чата обсуждения.
 `.trim();
@@ -37,6 +50,59 @@ export function registerCommands(bot: Bot): void {
   bot.command("ping", async (ctx) => {
     if (!ctx.from || !isOwner(ctx.from.id)) return;
     await ctx.reply("pong");
+  });
+
+  bot.command("limits", async (ctx) => {
+    if (!ctx.from || !isOwner(ctx.from.id)) return;
+
+    const arg = ctx.match?.toString().trim();
+    const userId = arg ? Number(arg) : ctx.from.id;
+    if (!Number.isInteger(userId) || userId <= 0) {
+      await ctx.reply("Использование: /limits [user_id]");
+      return;
+    }
+
+    const [usedUser, usedRandom, msgcnt] = await Promise.all([
+      getUserUsed(userId),
+      getRandomUsed(),
+      getGlobalMessageCounter(),
+    ]);
+
+    const date = currentDateKey();
+    const ttl = ttlUntilMidnightSec();
+    const text =
+      `<b>LLM лимиты (сегодня)</b>\n` +
+      `дата: <code>${date}</code>, ttl до полуночи: <code>${ttl}</code> сек\n\n` +
+      `<b>Пользователь</b> <code>${userId}</code>\n` +
+      `used: <code>${usedUser}</code> / cap: <code>${config.chatUserDailyCap}</code>\n\n` +
+      `<b>Чат</b>\n` +
+      `random used: <code>${usedRandom}</code> / cap: <code>${config.chatDailyRandomCap}</code>\n` +
+      `msg counter: <code>${msgcnt}</code> (для шага N)\n`;
+
+    await ctx.reply(text, { parse_mode: "HTML" });
+  });
+
+  bot.command("limits_reset", async (ctx) => {
+    if (!ctx.from || !isOwner(ctx.from.id)) return;
+
+    const arg = ctx.match?.toString().trim();
+    const userId = arg ? Number(arg) : ctx.from.id;
+    if (!Number.isInteger(userId) || userId <= 0) {
+      await ctx.reply("Использование: /limits_reset [user_id]");
+      return;
+    }
+
+    await Promise.all([
+      resetUserQuotaForToday(userId),
+      resetUserLimitNoticeForToday(userId),
+      resetRandomQuotaForToday(),
+      resetGlobalMessageCounterForToday(),
+    ]);
+
+    await ctx.reply(
+      `Сбросил LLM-лимиты на сегодня.\nuser <code>${userId}</code> и глобальные ключи чата очищены.`,
+      { parse_mode: "HTML" },
+    );
   });
 
   bot.command("status", async (ctx) => {

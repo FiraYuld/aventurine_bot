@@ -106,6 +106,24 @@ export async function getUserUsed(userId: number): Promise<number> {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Сколько «рандомных» ответов уже потрачено сегодня (без инкремента). */
+export async function getRandomUsed(): Promise<number> {
+  const date = currentDateKey();
+  const v = await getRedis().get(randomKey(date));
+  if (v == null) return 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Текущее значение счётчика сообщений сегодня (без инкремента). */
+export async function getGlobalMessageCounter(): Promise<number> {
+  const date = currentDateKey();
+  const v = await getRedis().get(msgCounterKey(date));
+  if (v == null) return 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 /**
  * Попытаться потратить «рандомную» квоту чата.
  * Возвращает allowed и счётчик после инкремента.
@@ -151,4 +169,26 @@ export async function tryMarkLimitNoticeSent(userId: number): Promise<boolean> {
   const r = getRedis();
   const ok = await r.set(key, "1", { ex: ttl, nx: true });
   return ok === "OK";
+}
+
+// -------- Админские утилиты (показ/сброс) --------
+
+export async function resetUserQuotaForToday(userId: number): Promise<void> {
+  const date = currentDateKey();
+  await getRedis().del(userKey(userId, date));
+}
+
+export async function resetRandomQuotaForToday(): Promise<void> {
+  const date = currentDateKey();
+  await getRedis().del(randomKey(date));
+}
+
+export async function resetGlobalMessageCounterForToday(): Promise<void> {
+  const date = currentDateKey();
+  await getRedis().del(msgCounterKey(date));
+}
+
+export async function resetUserLimitNoticeForToday(userId: number): Promise<void> {
+  const date = currentDateKey();
+  await getRedis().del(userLimitNoticeKey(userId, date));
 }
