@@ -96,7 +96,7 @@ function loadConfig() {
     llmApiKey,
     llmProvider,
     llmModel,
-    llmMaxOutputTokens: optionalInt("LLM_MAX_OUTPUT_TOKENS", 240),
+    llmMaxOutputTokens: optionalInt("LLM_MAX_OUTPUT_TOKENS", 360),
     llmTimeoutMs: optionalInt("LLM_TIMEOUT_MS", 15_000),
     llmContextMessages: optionalInt("LLM_CONTEXT_MESSAGES", 4),
     /** Таймзона для «календарных суток» лимитов. Упрощённо: поддерживается Europe/Moscow (UTC+3). */

@@ -7,6 +7,7 @@ import {
   getGlobalMessageCounter,
   getRandomUsed,
   getUserUsed,
+  resetAllUserQuotasForToday,
   resetGlobalMessageCounterForToday,
   resetRandomQuotaForToday,
   resetUserLimitNoticeForToday,
@@ -30,8 +31,9 @@ const HELP_TEXT = `
 
 Команды:
 /ping, /status, /start, /help — только владелец (ADMIN_LOG_CHAT_ID).
-/limits [user_id] — только владелец: показать суточные LLM-лимиты (сегодня).
-/limits_reset [user_id] — только владелец: сбросить суточные LLM-лимиты (сегодня).
+/limits [@username] — только владелец: показать суточные LLM-лимиты (сегодня).
+/limits_reset [@username] — только владелец: сбросить суточные LLM-лимиты (сегодня).
+/limits_reset_all — только владелец: сбросить лимиты всем пользователям (сегодня).
 /clear_react_leave user_id — только владелец: снять иммунитет после кнопки «Оставить».
 /unban — владелец или администраторы канала/чата обсуждения.
 `.trim();
@@ -56,9 +58,9 @@ export function registerCommands(bot: Bot): void {
     if (!ctx.from || !isOwner(ctx.from.id)) return;
 
     const arg = ctx.match?.toString().trim();
-    const userId = arg ? Number(arg) : ctx.from.id;
-    if (!Number.isInteger(userId) || userId <= 0) {
-      await ctx.reply("Использование: /limits [user_id]");
+    const userId = await resolveUserId(ctx, arg);
+    if (!userId) {
+      await ctx.reply("Использование: /limits [@username]");
       return;
     }
 
@@ -86,21 +88,31 @@ export function registerCommands(bot: Bot): void {
     if (!ctx.from || !isOwner(ctx.from.id)) return;
 
     const arg = ctx.match?.toString().trim();
-    const userId = arg ? Number(arg) : ctx.from.id;
-    if (!Number.isInteger(userId) || userId <= 0) {
-      await ctx.reply("Использование: /limits_reset [user_id]");
+    const userId = await resolveUserId(ctx, arg);
+    if (!userId) {
+      await ctx.reply("Использование: /limits_reset [@username]");
       return;
     }
 
     await Promise.all([
       resetUserQuotaForToday(userId),
       resetUserLimitNoticeForToday(userId),
-      resetRandomQuotaForToday(),
-      resetGlobalMessageCounterForToday(),
     ]);
 
     await ctx.reply(
-      `Сбросил LLM-лимиты на сегодня.\nuser <code>${userId}</code> и глобальные ключи чата очищены.`,
+      `Сбросил LLM-лимиты на сегодня.\nuser <code>${userId}</code> очищен.`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.command("limits_reset_all", async (ctx) => {
+    if (!ctx.from || !isOwner(ctx.from.id)) return;
+
+    const { users } = await resetAllUserQuotasForToday().catch(() => ({ users: 0 }));
+    await Promise.all([resetRandomQuotaForToday(), resetGlobalMessageCounterForToday()]);
+
+    await ctx.reply(
+      `Сбросил лимиты на сегодня для всех.\nusers очищено: <code>${users}</code>`,
       { parse_mode: "HTML" },
     );
   });
@@ -190,4 +202,28 @@ export function registerCommands(bot: Bot): void {
       parse_mode: "HTML",
     });
   });
+}
+
+async function resolveUserId(
+  ctx: Parameters<Parameters<typeof registerCommands>[0]["command"]>[1],
+  arg: string | undefined,
+): Promise<number | null> {
+  const raw = (arg ?? "").trim();
+  if (!raw) return ctx.from?.id ?? null;
+
+  // Требуем @username (но оставим число как fallback).
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }
+  if (!raw.startsWith("@")) return null;
+
+  try {
+    const chat = await ctx.api.getChat(raw);
+    // Для пользователя это будет private-чат с положительным id.
+    if (chat && "id" in chat && typeof chat.id === "number" && chat.id > 0) return chat.id;
+    return null;
+  } catch {
+    return null;
+  }
 }

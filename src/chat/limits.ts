@@ -64,6 +64,10 @@ function userLimitNoticeKey(userId: number, date: string): string {
   return `chat:user:${userId}:limitnoticed:${date}`;
 }
 
+function usersSeenKey(date: string): string {
+  return `chat:users:${date}`;
+}
+
 async function incrWithTtl(key: string, ttlSec: number): Promise<number> {
   const r = getRedis();
   const next = (await r.incr(key)) as number;
@@ -88,8 +92,10 @@ export async function tryConsumeUserQuota(userId: number): Promise<{
   const cap = c.chatUserDailyCap;
   if (cap <= 0) return { allowed: false, used: 0, cap };
   const date = currentDateKey();
-  const key = userKey(userId, date);
   const ttl = ttlUntilMidnightSec();
+  // Трекаем, какие пользователи участвовали сегодня — нужно для admin reset all.
+  await trackUserSeen(userId, date, ttl).catch(() => {});
+  const key = userKey(userId, date);
   const used = await incrWithTtl(key, ttl);
   if (used > cap) {
     return { allowed: false, used, cap };
@@ -191,4 +197,28 @@ export async function resetGlobalMessageCounterForToday(): Promise<void> {
 export async function resetUserLimitNoticeForToday(userId: number): Promise<void> {
   const date = currentDateKey();
   await getRedis().del(userLimitNoticeKey(userId, date));
+}
+
+export async function resetAllUserQuotasForToday(): Promise<{ users: number }> {
+  const date = currentDateKey();
+  const r = getRedis();
+  const raw = (await r.smembers(usersSeenKey(date))) as unknown as Array<string | number>;
+  const ids = (Array.isArray(raw) ? raw : [])
+    .map((v) => Number(v))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
+  await Promise.all(
+    ids.map(async (userId) => {
+      await r.del(userKey(userId, date));
+      await r.del(userLimitNoticeKey(userId, date));
+    }),
+  );
+  await r.del(usersSeenKey(date));
+  return { users: ids.length };
+}
+
+async function trackUserSeen(userId: number, date: string, ttlSec: number): Promise<void> {
+  const r = getRedis();
+  await r.sadd(usersSeenKey(date), String(userId));
+  await r.expire(usersSeenKey(date), ttlSec);
 }

@@ -265,11 +265,11 @@ function postProcessReply(raw: string): string {
   s = s.replace(/[—–]/g, "-");
   // Чуть менее «идеальная» пунктуация: убираем часть запятых.
   s = s.replace(/,\s+/g, " ");
-  // Жёстко режем многословие: максимум 2 предложения.
+  // Жёстко режем многословие: максимум 3 предложения.
   s = s
     .split(/(?<=[.!?])\s+/)
     .filter((p) => p.trim().length > 0)
-    .slice(0, 2)
+    .slice(0, 3)
     .join(" ")
     .trim();
   // Понижаем регистр первой буквы.
@@ -282,7 +282,7 @@ function postProcessReply(raw: string): string {
   s = s.replace(/\?+$/g, "");
   if (isQuestion) s = s + "?";
   // Жёсткий потолок длины — Telegram и так ограничивает ~4096, но лучше короче.
-  if (s.length > 240) s = s.slice(0, 240).trimEnd() + "…";
+  if (s.length > 360) s = s.slice(0, 360).trimEnd() + "…";
   return s;
 }
 
