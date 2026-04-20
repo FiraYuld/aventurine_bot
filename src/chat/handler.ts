@@ -25,10 +25,10 @@ export function registerChatHandler(bot: Bot): void {
     // Сам бот — игнор.
     if (from.is_bot) return;
 
-    // LLM-режим пока включаем только в личке владельца (ADMIN_LOG_CHAT_ID).
-    // В основном чате (CHAT_ID) бот остаётся только модератором.
+    // LLM-режим: личка владельца (без лимитов) и основной чат обсуждения (с лимитами).
     const inOwnerDm = chat.type === "private" && from.id === config.adminLogChatId;
-    if (!inOwnerDm) return;
+    const inMainChat = chat.id === config.chatId;
+    if (!inOwnerDm && !inMainChat) return;
 
     const client = getLlmClient();
     if (!client) return;
@@ -37,12 +37,14 @@ export function registerChatHandler(bot: Bot): void {
       const botId = await getBotId(ctx.api);
       const botUsername = await getBotUsername(ctx.api);
 
-      // Сохраняем сообщение в буфер (для ambient-контекста).
-      await appendRecentMessage({
-        author: displayName(from),
-        text: msg.text,
-        fromBot: false,
-      }).catch((err) => console.error("[chat] appendRecentMessage", err));
+      // Сохраняем сообщение в буфер (ambient-контекст используем только для основного чата).
+      if (inMainChat) {
+        await appendRecentMessage({
+          author: displayName(from),
+          text: msg.text,
+          fromBot: false,
+        }).catch((err) => console.error("[chat] appendRecentMessage", err));
+      }
 
       const addressed = isAddressed({
         text: msg.text,
@@ -63,7 +65,7 @@ export function registerChatHandler(bot: Bot): void {
         return;
       }
 
-      // Рандом-вставки отключены: LLM работает только в личке владельца.
+      // Рандом-вставки пока отключены.
     } catch (err) {
       console.error("[chat] handler failed", err);
     }
