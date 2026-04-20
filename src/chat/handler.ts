@@ -130,15 +130,21 @@ async function handleAddressed(
     repliedToBotText?: string;
   },
 ): Promise<void> {
-  const quota = await tryConsumeUserQuota(params.user.id);
-  if (!quota.allowed) {
-    await sendLimitNoticeOncePerDay({
-      api,
-      chatId: params.chatId,
-      userId: params.user.id,
-      replyToMessageId: params.messageId,
-    });
-    return;
+  // В личке владельца отвечаем без лимитов (для отладки и настройки персонажа).
+  // Для остальных чатов/пользователей лимит остаётся, но сейчас хендлер
+  // зарегистрирован только для owner-DM.
+  const isOwner = params.chatId === params.user.id && params.user.id === config.adminLogChatId;
+  if (!isOwner) {
+    const quota = await tryConsumeUserQuota(params.user.id);
+    if (!quota.allowed) {
+      await sendLimitNoticeOncePerDay({
+        api,
+        chatId: params.chatId,
+        userId: params.user.id,
+        replyToMessageId: params.messageId,
+      });
+      return;
+    }
   }
 
   const recent = await getRecentMessages(config.llmContextMessages).catch(() => []);
@@ -172,7 +178,7 @@ function buildAddressedMessages(params: {
   } else {
     // Несколько последних реплик чата как контекст (если нет явной склейки).
     const transcript = params.recent
-      .slice(-4)
+      .slice(-Math.max(0, config.llmContextMessages))
       .map((m) => `${m.fromBot ? "Авантюрин" : m.author}: ${m.text}`)
       .join("\n");
     if (transcript.length > 0) {
