@@ -236,6 +236,16 @@ async function callLlmAndReply(
           ? { message_id: params.replyToMessageId }
           : undefined,
     });
+
+    // В личке владельца можно иногда добивать фирменным стикером.
+    if (params.chatId === config.adminLogChatId && Math.random() < 0.35) {
+      const sticker = await pickBrandStickerId(api);
+      if (sticker) {
+        await api.sendSticker(params.chatId, sticker).catch((err) => {
+          console.error("[chat] sendSticker failed", err);
+        });
+      }
+    }
     // Сохраняем свою реплику в буфер контекста.
     await appendRecentMessage({ author: "Авантюрин", text, fromBot: true }).catch(
       (err) => console.error("[chat] save bot reply", err),
@@ -249,9 +259,38 @@ function postProcessReply(raw: string): string {
   let s = raw.trim();
   // Иногда модель повторяет префикс «Авантюрин:» — убираем.
   s = s.replace(/^\s*(?:авантюрин|aventurine)\s*[:\-—]\s*/i, "");
+  // Убираем длинные тире.
+  s = s.replace(/[—–]/g, "-");
+  // Чуть менее «идеальная» пунктуация: иногда убираем запятые.
+  s = s.replace(/,\s+/g, " ");
+  // Понижаем регистр первой буквы.
+  if (s.length > 0) s = s[0]!.toLowerCase() + s.slice(1);
+  // Не заканчиваем «канцелярской» точкой.
+  s = s.replace(/\.\s*$/g, "");
   // Жёсткий потолок длины — Telegram и так ограничивает ~4096, но лучше короче.
   if (s.length > 800) s = s.slice(0, 800) + "…";
   return s;
+}
+
+let cachedBrandStickerIds: string[] | undefined;
+async function pickBrandStickerId(
+  api: Parameters<typeof sendLimitNoticeOncePerDay>[0]["api"],
+): Promise<string | null> {
+  if (!cachedBrandStickerIds) {
+    try {
+      // По ссылке: https://t.me/addstickers/Avantyurak
+      const set = await api.getStickerSet("Avantyurak");
+      cachedBrandStickerIds = (set.stickers ?? [])
+        .map((s) => s.file_id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0);
+    } catch (err) {
+      console.error("[chat] getStickerSet failed", err);
+      cachedBrandStickerIds = [];
+    }
+  }
+  if (cachedBrandStickerIds.length === 0) return null;
+  const idx = Math.floor(Math.random() * cachedBrandStickerIds.length);
+  return cachedBrandStickerIds[idx] ?? null;
 }
 
 // ---------- Вспомогательные ----------
