@@ -3,17 +3,24 @@ import { getConfig } from "./config.js";
 import { registerReactionHandler } from "./handlers/reaction.js";
 import { registerModerationCallbacks } from "./handlers/moderation-callbacks.js";
 import { registerCommands } from "./handlers/commands.js";
+import { registerChatHandler } from "./chat/handler.js";
 import { scopeMiddleware } from "./middleware/scope.js";
 
 let botInstance: Bot | undefined;
 
 export function getBot(): Bot {
   if (!botInstance) {
-    botInstance = new Bot(getConfig().botToken);
+    const cfg = getConfig();
+    botInstance = new Bot(cfg.botToken);
+    console.info(`[bot] init: env=${cfg.botEnv}`);
     botInstance.use(scopeMiddleware);
+    // Команды регистрируются ПЕРВЫМИ, чтобы не уходить в LLM-хендлер.
     registerCommands(botInstance);
     registerReactionHandler(botInstance);
     registerModerationCallbacks(botInstance);
+    // LLM-режим регистрируется ПОСЛЕ команд: команды типа /ping /status уже
+    // отработали и вернули, а оставшиеся message:text попадут сюда.
+    registerChatHandler(botInstance);
     botInstance.catch((err) => {
       const ctx = err.ctx;
       console.error(`Ошибка в обновлении ${ctx.update.update_id}:`);

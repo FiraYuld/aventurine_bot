@@ -4,6 +4,9 @@ import { config } from "../config.js";
 /**
  * Личка владельца, чат обсуждения (CHAT_ID), чат модерации (MODERATION_CHAT_ID),
  * callback из чата модерации. Остальное — игнор.
+ *
+ * Пропуск обычных текстовых сообщений в CHAT_ID и из лички владельца нужен
+ * также для LLM-режима «Авантюрин общается в чате» (src/chat/handler.ts).
  */
 export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise<void> {
   if (ctx.update.callback_query) {

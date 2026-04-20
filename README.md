@@ -98,6 +98,53 @@ ngrok http 3000
 # https://<ngrok-url>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
+### Staging-среда (обязательно для экспериментов с LLM-режимом)
+
+Чтобы случайно не сломать прод-модерацию, LLM-режим и любые крупные
+изменения сначала проверяются на **отдельном тестовом боте**, в **отдельном
+канале/чатах**, с **отдельной Upstash-БД**. Прод-бот и его webhook при этом
+не трогаются.
+
+Подготовка один раз:
+
+1. **Тестовый бот** у `@BotFather`: `/newbot` → новое имя (например
+   `AvanturinStagingBot`), свой токен. `/setprivacy` → Disable,
+   `/setjoingroups` → Enable (как у прод-бота).
+2. **Тестовые сущности**: отдельный небольшой канал, привязанный чат
+   обсуждения, отдельная группа модерации. Добавить тестового бота админом
+   во все три с такими же правами, как у прод-бота. ID забрать через
+   `@username_to_id_bot`.
+3. **Отдельная Upstash-БД** под staging (`UPSTASH_REDIS_REST_URL` и
+   `UPSTASH_REDIS_REST_TOKEN`). Прод-БД не трогаем — в ней живут сессии
+   реакционной модерации.
+4. Локально держим два файла (оба в `.gitignore`): `.env` для удобства и
+   `.env.staging` с тестовыми значениями.
+
+Цикл разработки:
+
+```bash
+# 1. Поднять локальный сервер со staging-значениями.
+#    vercel dev по умолчанию читает .env — подменяем символической ссылкой или
+#    копируем нужные переменные перед запуском:
+cp .env.staging .env && npm run local
+
+# 2. В другом терминале открыть туннель:
+ngrok http 3000
+
+# 3. Установить webhook ТЕСТОВОГО бота на ngrok-URL:
+#    https://<ngrok>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET из .env.staging>
+```
+
+После остановки dev-сервера тестовый бот перестаёт отвечать (webhook бьётся
+в мёртвый туннель) — это нормально, прода это не касается. Прод-бота трогать
+не нужно: его webhook остаётся на Vercel-домене.
+
+Проверка, какая среда отвечает:
+
+- `/api/health` возвращает `bot_env` (`prod` или `staging`) и
+  `llm_enabled` (булево) — удобно убедиться, что webhook ведёт туда, куда
+  ждёшь.
+
 ---
 
 ## Деплой на Vercel — пошагово
@@ -122,6 +169,11 @@ vercel env add ADMIN_LOG_CHAT_ID production
 vercel env add MODERATION_CHAT_ID production
 vercel env add UPSTASH_REDIS_REST_URL production
 vercel env add UPSTASH_REDIS_REST_TOKEN production
+
+# (опционально) LLM-режим — можно добавить позже, отдельным шагом
+# vercel env add LLM_API_KEY production
+# vercel env add LLM_PROVIDER production   # openai | anthropic | openrouter
+# vercel env add LLM_MODEL production
 
 # Деплой
 vercel --prod
@@ -165,6 +217,66 @@ https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 
 ---
 
+## LLM-режим «Авантюрин общается в чате»
+
+Бот может отвечать в чате обсуждения (`CHAT_ID`) **в стиле персонажа
+Авантюрин** из Honkai: Star Rail. Режим опциональный, подключается через
+внешний LLM API (OpenAI по умолчанию).
+
+Когда бот вступает:
+
+- **По имени** — если кто-то пишет «Авантюрин» в сообщении (включая
+  словоформы: «Авантюрина», «Авантюрину», и т.п.), упоминает `@botname`
+  или **отвечает** на сообщение бота — это адресный триггер.
+- **Сам иногда** — каждое `CHAT_RANDOM_EVERY_N`-ное сообщение в чате бот
+  может кинуть короткую ремарку «от себя».
+
+Лимиты (жёсткие, хранятся в Redis, ключи TTL-ятся до полуночи `CHAT_TZ`):
+
+- **`CHAT_USER_DAILY_CAP`** (дефолт 5) — ответов **одному пользователю** в
+  сутки. В этот же бюджет попадает продолжение диалога: каждый реплай на
+  сообщение бота тоже расходует квоту пользователя.
+- **`CHAT_DAILY_RANDOM_CAP`** (дефолт 50) — «рандомных» вставок **на весь
+  чат** в сутки.
+- **`LLM_MAX_OUTPUT_TOKENS`** (дефолт 240) — потолок длины ответа.
+
+Поведение при исчерпании лимита пользователя:
+
+- **Одно** сообщение в стиле персонажа («фишки на сегодня кончились», и т.п.),
+  потом — тишина до следующих суток (флаг фиксируется отдельно в Redis).
+
+### Как включить
+
+1. Получить API-ключ у провайдера:
+   - OpenAI: <https://platform.openai.com/api-keys>
+   - Anthropic: <https://console.anthropic.com/>
+   - OpenRouter (один ключ на многих провайдеров): <https://openrouter.ai/>
+2. Добавить в Vercel env (Production) как минимум `LLM_API_KEY`. Остальное
+   при необходимости:
+   ```bash
+   vercel env add LLM_API_KEY production
+   vercel env add LLM_PROVIDER production   # openai | anthropic | openrouter
+   vercel env add LLM_MODEL production      # например gpt-4o-mini
+   ```
+3. `vercel --prod` → `/api/setup?key=…` → проверка `/api/health`
+   (`llm_enabled: true`).
+
+Если `LLM_API_KEY` **не задан** — хендлер просто не регистрируется, бот
+работает только как модератор реакций (как раньше).
+
+### Оценка стоимости
+
+При ~50 «рандомных» вставках/день и разумном объёме триггеров: порядок
+**$1–2 / мес** для `gpt-4o-mini`, выше для Anthropic Haiku. Реальный расход
+зависит от активности чата и длины ответов — смотри панель провайдера.
+
+### Откат
+
+Удалить `LLM_API_KEY` из прод-env и сделать redeploy — LLM-режим
+выключится, остальное поведение бота не изменится.
+
+---
+
 ## Безопасность
 
 - Все секреты — только в `vercel env`, никогда не коммитить.
@@ -198,19 +310,29 @@ https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 avanturin-bot/
 ├── api/
 │   ├── telegram.ts       # webhook endpoint
-│   └── setup.ts          # установка/удаление/инфо webhook
+│   ├── setup.ts          # установка/удаление/инфо webhook
+│   └── health.ts         # проверка env + bot_env + llm_enabled
 ├── src/
-│   ├── bot.ts            # инстанс grammY
-│   ├── config.ts         # парсинг env
+│   ├── bot.ts            # инстанс grammY, регистрация хендлеров
+│   ├── config.ts         # парсинг env (ядро + LLM-блок)
 │   ├── logger.ts         # логи (баны → модерация, ошибки → владелец)
 │   ├── moderation.ts     # бан, проверка подписки, риск-скоринг
 │   ├── moderation-card.ts
 │   ├── post-ban.ts       # бан + ответ в чате обсуждения
-│   ├── reaction-mod-session.ts  # Redis-сессии
-│   └── handlers/
-│       ├── reaction.ts   # message_reaction
-│       ├── moderation-callbacks.ts  # inline-кнопки
-│       └── commands.ts   # /start /help /ping /status /unban
+│   ├── reaction-mod-session.ts  # Redis-сессии модерации реакций
+│   ├── middleware/
+│   │   └── scope.ts      # фильтр апдейтов по чатам/типам
+│   ├── handlers/
+│   │   ├── reaction.ts   # message_reaction
+│   │   ├── moderation-callbacks.ts  # inline-кнопки
+│   │   └── commands.ts   # /start /help /ping /status /unban
+│   └── chat/             # LLM-режим «Авантюрин общается в чате»
+│       ├── persona.ts        # системный промпт + фразы о лимите
+│       ├── llm.ts            # клиент LLM (OpenAI/Anthropic/OpenRouter)
+│       ├── limits.ts         # суточные лимиты в Redis
+│       ├── limit-notice.ts   # одноразовое сообщение о лимите
+│       ├── context.ts        # буфер последних сообщений чата
+│       └── handler.ts        # bot.on('message:text') с триггерами
 ├── .env.example
 ├── package.json
 ├── tsconfig.json

@@ -64,21 +64,6 @@ export function registerModerationCallbacks(bot: Bot): void {
         );
         await deleteReactionModSession(userId);
         await setReactionLeaveAlone(userId, config.reactionLeaveAloneTtlSec);
-        // #region agent log
-        fetch("http://127.0.0.1:7458/ingest/15bbcc9f-06b6-4a51-a8b8-fecc59d94e52", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "bd3606" },
-          body: JSON.stringify({
-            sessionId: "bd3606",
-            runId: "leave-alone",
-            hypothesisId: "H1",
-            location: "moderation-callbacks.ts:leave",
-            message: "setReactionLeaveAlone after Оставить",
-            data: { userId, ttlSec: config.reactionLeaveAloneTtlSec },
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
       } catch (err) {
         await logError(ctx.api, "правка сообщения «оставили»", err);
       }

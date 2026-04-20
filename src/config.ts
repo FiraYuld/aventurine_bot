@@ -17,8 +17,62 @@ function requiredInt(name: string): number {
   return num;
 }
 
+function optional(name: string): string | undefined {
+  const v = process.env[name];
+  if (v === undefined) return undefined;
+  const trimmed = v.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+function optionalInt(name: string, defaultValue: number): number {
+  const raw = optional(name);
+  if (raw === undefined) return defaultValue;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || !Number.isInteger(num)) {
+    throw new Error(`Переменная ${name} должна быть целым числом, получено: ${raw}`);
+  }
+  return num;
+}
+
+function optionalEnum<T extends string>(
+  name: string,
+  allowed: readonly T[],
+  defaultValue: T,
+): T {
+  const raw = optional(name);
+  if (raw === undefined) return defaultValue;
+  if (!(allowed as readonly string[]).includes(raw)) {
+    throw new Error(
+      `Переменная ${name} должна быть одним из: ${allowed.join(", ")}; получено: ${raw}`,
+    );
+  }
+  return raw as T;
+}
+
+const LLM_PROVIDERS = ["openai", "anthropic", "openrouter"] as const;
+export type LlmProvider = (typeof LLM_PROVIDERS)[number];
+
+const BOT_ENVS = ["prod", "staging"] as const;
+export type BotEnv = (typeof BOT_ENVS)[number];
+
+function defaultModelFor(provider: LlmProvider): string {
+  switch (provider) {
+    case "openai":
+      return "gpt-4o-mini";
+    case "anthropic":
+      return "claude-3-5-haiku-latest";
+    case "openrouter":
+      return "openai/gpt-4o-mini";
+  }
+}
+
 function loadConfig() {
+  const llmProvider = optionalEnum("LLM_PROVIDER", LLM_PROVIDERS, "openai");
+  const llmApiKey = optional("LLM_API_KEY");
+  const llmModel = optional("LLM_MODEL") ?? defaultModelFor(llmProvider);
+
   return {
+    botEnv: optionalEnum("BOT_ENV", BOT_ENVS, "prod"),
     botToken: required("TELEGRAM_BOT_TOKEN"),
     webhookSecret: required("TELEGRAM_WEBHOOK_SECRET"),
     channelId: requiredInt("CHANNEL_ID"),
@@ -36,6 +90,23 @@ function loadConfig() {
      * (карточки и автобан по 2+ реакциям), пока ключ живёт в Redis.
      */
     reactionLeaveAloneTtlSec: 7 * 24 * 60 * 60,
+
+    // ---- LLM-режим (Авантюрин общается в чате) ----
+    /** Пустой ключ = LLM-режим выключен, остальные переменные не читаются строго. */
+    llmApiKey,
+    llmProvider,
+    llmModel,
+    llmMaxOutputTokens: optionalInt("LLM_MAX_OUTPUT_TOKENS", 240),
+    llmTimeoutMs: optionalInt("LLM_TIMEOUT_MS", 15_000),
+    llmContextMessages: optionalInt("LLM_CONTEXT_MESSAGES", 4),
+    /** Таймзона для «календарных суток» лимитов. Упрощённо: поддерживается Europe/Moscow (UTC+3). */
+    chatTz: optional("CHAT_TZ") ?? "Europe/Moscow",
+    /** Шаг счётчика сообщений, на котором пробуем вставить «рандом» в стиле персонажа. */
+    chatRandomEveryN: optionalInt("CHAT_RANDOM_EVERY_N", 33),
+    /** Потолок «рандомных» ответов в сутки на весь чат. */
+    chatDailyRandomCap: optionalInt("CHAT_DAILY_RANDOM_CAP", 50),
+    /** Потолок ответов на одного пользователя в сутки (триггер «Авантюрин» + продолжение диалога). */
+    chatUserDailyCap: optionalInt("CHAT_USER_DAILY_CAP", 5),
   } as const;
 }
 
@@ -48,6 +119,11 @@ export function getConfig(): Config {
     cache = loadConfig();
   }
   return cache;
+}
+
+/** LLM-режим включён, если задан ключ. */
+export function isLlmEnabled(cfg: Config = getConfig()): boolean {
+  return Boolean(cfg.llmApiKey);
 }
 
 /** Доступ к конфигу; при первом обращении читает env (как и раньше). */
