@@ -117,7 +117,7 @@ class OpenAiCompatibleClient implements LlmClient {
     const body = {
       model: this.model,
       max_tokens: maxTokens,
-      temperature: 1.2,
+      temperature: 0.9,
       messages: [
         { role: "system", content: input.system },
         ...input.messages.map((m) => ({ role: m.role, content: m.content })),

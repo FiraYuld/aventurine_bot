@@ -37,14 +37,12 @@ export function registerChatHandler(bot: Bot): void {
       const botId = await getBotId(ctx.api);
       const botUsername = await getBotUsername(ctx.api);
 
-      // Сохраняем сообщение в буфер (ambient-контекст используем только для основного чата).
-      if (inMainChat) {
-        await appendRecentMessage({
-          author: displayName(from),
-          text: msg.text,
-          fromBot: false,
-        }).catch((err) => console.error("[chat] appendRecentMessage", err));
-      }
+      // Сохраняем сообщение в буфер (контекст обязателен и для чата, и для owner-DM).
+      await appendRecentMessage({
+        author: displayName(from),
+        text: msg.text,
+        fromBot: false,
+      }).catch((err) => console.error("[chat] appendRecentMessage", err));
 
       const addressed = isAddressed({
         text: msg.text,
@@ -177,20 +175,22 @@ function buildAddressedMessages(params: {
   // чтобы LLM понимал склейку.
   if (params.repliedToBotText) {
     out.push({ role: "assistant", content: params.repliedToBotText });
-  } else {
-    // Несколько последних реплик чата как контекст (если нет явной склейки).
-    const transcript = params.recent
-      .slice(-Math.max(0, config.llmContextMessages))
-      .map((m) => `${m.fromBot ? "Авантюрин" : m.author}: ${m.text}`)
-      .join("\n");
-    if (transcript.length > 0) {
-      out.push({
-        role: "user",
-        content:
-          "Контекст недавних сообщений в чате (для справки, НЕ отвечай на них напрямую):\n" +
-          transcript,
-      });
-    }
+  }
+
+  // Контекст обязателен: всегда даём последние реплики (даже если это owner-DM),
+  // и требуем подхватить 1–2 слова/фразы из него в ответ.
+  const transcript = params.recent
+    .slice(-Math.max(0, config.llmContextMessages))
+    .map((m) => `${m.fromBot ? "Авантюрин" : m.author}: ${m.text}`)
+    .join("\n");
+  if (transcript.length > 0) {
+    out.push({
+      role: "user",
+      content:
+        "Контекст последних сообщений (обязателен):\n" +
+        transcript +
+        "\n\nПравило: в своём ответе обязательно используй 1–2 слова или короткие фразы из этого контекста, но не отвечай на него напрямую.",
+    });
   }
 
   out.push({
