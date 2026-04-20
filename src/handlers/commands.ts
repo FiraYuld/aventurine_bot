@@ -1,4 +1,4 @@
-import type { Bot } from "grammy";
+import type { Bot, CommandContext, Context } from "grammy";
 import { config } from "../config.js";
 import { isAdminAnywhere } from "../moderation.js";
 import { clearReactionLeaveAlone } from "../reaction-mod-session.js";
@@ -205,7 +205,7 @@ export function registerCommands(bot: Bot): void {
 }
 
 async function resolveUserId(
-  ctx: Parameters<Parameters<typeof registerCommands>[0]["command"]>[1],
+  ctx: CommandContext<Context>,
   arg: string | undefined,
 ): Promise<number | null> {
   const raw = (arg ?? "").trim();
