@@ -18,9 +18,9 @@ export interface RecentMessage {
 }
 
 const KEY = "chat:recent";
-const MAX_ITEMS = 12;
+const MAX_ITEMS = 20;
 const MAX_TEXT_CHARS = 400;
-const TTL_SEC = 30 * 60;
+const TTL_SEC = 6 * 60 * 60;
 
 let redis: Redis | undefined;
 
