@@ -1,9 +1,17 @@
 import type { Bot } from "grammy";
 import type { Message, User } from "grammy/types";
 import { config, isLlmEnabled } from "../config.js";
-import { ADDRESSED_MODE_HINT, AVENTURINE_SYSTEM_PROMPT } from "./persona.js";
+import {
+  ADDRESSED_MODE_HINT,
+  AVENTURINE_SYSTEM_PROMPT,
+  RANDOM_MODE_HINT,
+} from "./persona.js";
 import { getLlmClient, type LlmMessage } from "./llm.js";
-import { tryConsumeUserQuota } from "./limits.js";
+import {
+  incGlobalMessageCounter,
+  tryConsumeRandomQuota,
+  tryConsumeUserQuota,
+} from "./limits.js";
 import { sendLimitNoticeOncePerDay } from "./limit-notice.js";
 import { appendRecentMessage, getRecentMessages } from "./context.js";
 
@@ -63,7 +71,14 @@ export function registerChatHandler(bot: Bot): void {
         return;
       }
 
-      // Рандом-вставки пока отключены.
+      // Рандом-ветка: только в основном чате, раз в N сообщений, в пределах
+      // суточной квоты. Личку владельца здесь не трогаем — там всё только
+      // адресно, для отладки персонажа.
+      if (inMainChat) {
+        await maybeHandleRandom(ctx.api, { chatId: chat.id }).catch((err) =>
+          console.error("[chat] maybeHandleRandom failed", err),
+        );
+      }
     } catch (err) {
       console.error("[chat] handler failed", err);
     }
@@ -203,6 +218,43 @@ function buildAddressedMessages(params: {
 
 // ---------- Рандом-ветка ----------
 
+async function maybeHandleRandom(
+  api: Parameters<typeof sendLimitNoticeOncePerDay>[0]["api"],
+  params: { chatId: number },
+): Promise<void> {
+  const everyN = Math.max(1, config.chatRandomEveryN);
+  const counter = await incGlobalMessageCounter().catch(() => 0);
+  if (counter <= 0) return;
+  if (counter % everyN !== 0) return;
+
+  const quota = await tryConsumeRandomQuota();
+  if (!quota.allowed) return;
+
+  const recent = await getRecentMessages(config.llmContextMessages).catch(() => []);
+  if (recent.length === 0) return;
+
+  const transcript = recent
+    .map((m) => `${m.fromBot ? "Авантюрин" : m.author}: ${m.text}`)
+    .join("\n");
+
+  const messages: LlmMessage[] = [
+    {
+      role: "user",
+      content:
+        "Контекст последних сообщений чата:\n" +
+        transcript +
+        "\n\nКинь короткую реплику «от себя» в стиле персонажа, не обращаясь ни к кому лично.",
+    },
+  ];
+
+  await callLlmAndReply(api, {
+    chatId: params.chatId,
+    system: `${AVENTURINE_SYSTEM_PROMPT}\n\n${RANDOM_MODE_HINT}`,
+    messages,
+    stickerChance: config.chatRandomStickerChance,
+  });
+}
+
 // ---------- Общий вызов LLM и отправка ----------
 
 async function callLlmAndReply(
@@ -212,35 +264,46 @@ async function callLlmAndReply(
     replyToMessageId?: number;
     system: string;
     messages: LlmMessage[];
+    /** Переопределение шанса добить стикером. По умолчанию — config.chatStickerChance. */
+    stickerChance?: number;
   },
 ): Promise<void> {
   const client = getLlmClient();
   if (!client) return;
 
-  let text: string;
+  let parts: string[];
   try {
     const out = await client.chat({
       system: params.system,
       messages: params.messages,
     });
-    text = postProcessReply(out.text);
+    parts = postProcessReply(out.text);
   } catch (err) {
     console.error("[chat] LLM error", err);
     return;
   }
 
-  if (!text) return;
+  if (parts.length === 0) return;
 
   try {
-    await api.sendMessage(params.chatId, text, {
-      reply_parameters:
-        params.replyToMessageId !== undefined
-          ? { message_id: params.replyToMessageId }
-          : undefined,
-    });
+    for (let i = 0; i < parts.length; i++) {
+      const text = parts[i]!;
+      // reply_parameters используем только на первом сообщении — чтобы визуально
+      // был якорь к исходной реплике; второе идёт обычным сообщением.
+      await api.sendMessage(params.chatId, text, {
+        reply_parameters:
+          i === 0 && params.replyToMessageId !== undefined
+            ? { message_id: params.replyToMessageId }
+            : undefined,
+      });
+      await appendRecentMessage({ author: "Авантюрин", text, fromBot: true }).catch(
+        (err) => console.error("[chat] save bot reply", err),
+      );
+    }
 
-    // В личке владельца можно иногда добивать фирменным стикером.
-    if (params.chatId === config.adminLogChatId && Math.random() < 0.35) {
+    // Иногда добиваем фирменным стикером — работает и в основном чате, и в личке.
+    const chance = params.stickerChance ?? config.chatStickerChance;
+    if (chance > 0 && Math.random() < chance) {
       const sticker = await pickBrandStickerId(api);
       if (sticker) {
         await api.sendSticker(params.chatId, sticker).catch((err) => {
@@ -248,17 +311,37 @@ async function callLlmAndReply(
         });
       }
     }
-    // Сохраняем свою реплику в буфер контекста.
-    await appendRecentMessage({ author: "Авантюрин", text, fromBot: true }).catch(
-      (err) => console.error("[chat] save bot reply", err),
-    );
   } catch (err) {
     console.error("[chat] sendMessage failed", err);
   }
 }
 
-function postProcessReply(raw: string): string {
+/**
+ * Обрабатывает сырой ответ LLM и возвращает 1–2 отдельных сообщения.
+ * Маркер `|||` — способ для модели разбить ответ на два коротких сообщения.
+ */
+function postProcessReply(raw: string): string[] {
+  const initial = raw.trim();
+  if (!initial) return [];
+
+  // Разбиваем на максимум 2 части по маркеру |||.
+  const rawParts = initial
+    .split("|||")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  const limited = rawParts.slice(0, 2);
+
+  const cleaned: string[] = [];
+  for (const part of limited) {
+    const s = cleanOnePart(part);
+    if (s.length > 0) cleaned.push(s);
+  }
+  return cleaned;
+}
+
+function cleanOnePart(raw: string): string {
   let s = raw.trim();
+  if (!s) return "";
   // Иногда модель повторяет префикс «Авантюрин:» — убираем.
   s = s.replace(/^\s*(?:авантюрин|aventurine)\s*[:\-—]\s*/i, "");
   // Убираем длинные тире.
@@ -275,7 +358,9 @@ function postProcessReply(raw: string): string {
   // Понижаем регистр первой буквы.
   if (s.length > 0) s = s[0]!.toLowerCase() + s.slice(1);
   // Почти полностью режем пунктуацию.
-  const isQuestion = /\?\s*$/.test(s) || /^\s*(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|чё|че)\b/i.test(s);
+  const isQuestion =
+    /\?\s*$/.test(s) ||
+    /^\s*(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|чё|че)\b/i.test(s);
   s = s.replace(/[!.,;:()"«»'”“]/g, "");
   s = s.replace(/\s{2,}/g, " ").trim();
   // Вопросительный знак ставим только если это похоже на вопрос.

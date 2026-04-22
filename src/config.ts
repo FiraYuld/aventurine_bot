@@ -34,6 +34,16 @@ function optionalInt(name: string, defaultValue: number): number {
   return num;
 }
 
+function optionalFloat(name: string, defaultValue: number): number {
+  const raw = optional(name);
+  if (raw === undefined) return defaultValue;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) {
+    throw new Error(`Переменная ${name} должна быть числом, получено: ${raw}`);
+  }
+  return num;
+}
+
 function optionalEnum<T extends string>(
   name: string,
   allowed: readonly T[],
@@ -102,11 +112,15 @@ function loadConfig() {
     /** Таймзона для «календарных суток» лимитов. Упрощённо: поддерживается Europe/Moscow (UTC+3). */
     chatTz: optional("CHAT_TZ") ?? "Europe/Moscow",
     /** Шаг счётчика сообщений, на котором пробуем вставить «рандом» в стиле персонажа. */
-    chatRandomEveryN: optionalInt("CHAT_RANDOM_EVERY_N", 33),
+    chatRandomEveryN: optionalInt("CHAT_RANDOM_EVERY_N", 15),
     /** Потолок «рандомных» ответов в сутки на весь чат. */
     chatDailyRandomCap: optionalInt("CHAT_DAILY_RANDOM_CAP", 50),
     /** Потолок ответов на одного пользователя в сутки (триггер «Авантюрин» + продолжение диалога). */
     chatUserDailyCap: optionalInt("CHAT_USER_DAILY_CAP", 5),
+    /** Вероятность добить ответ фирменным стикером, 0..1. */
+    chatStickerChance: optionalFloat("CHAT_STICKER_CHANCE", 0.25),
+    /** Вероятность добить стикером в рандом-ремарке (она короче и живее). */
+    chatRandomStickerChance: optionalFloat("CHAT_RANDOM_STICKER_CHANCE", 0.35),
   } as const;
 }
 
