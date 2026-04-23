@@ -7,3 +7,9 @@ node_modules/
 .DS_Store
 dist/
 .vercel
+
+# Сырой экспорт чата и артефакты оффлайн-анализа (содержат приватные сообщения).
+# В репу пойдёт только итоговый src/chat/chat-lore.ts.
+result.json
+tools/chat-analysis/data/
+tools/chat-analysis/out/
