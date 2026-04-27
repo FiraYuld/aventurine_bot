@@ -3,7 +3,12 @@ import { GrammyError } from "grammy";
 import { config } from "../config.js";
 import { logError } from "../logger.js";
 import { computeRisk } from "../moderation.js";
-import { parseReactionModCallback } from "../moderation-card.js";
+import {
+  buildReactionWarningHtml,
+  buildReactionWarningResolvedHtml,
+  buildReactionWarningSubscribedHtml,
+  parseReactionModCallback,
+} from "../moderation-card.js";
 import { executeReactionBan } from "../post-ban.js";
 import {
   deleteReactionModSession,
@@ -62,6 +67,23 @@ export function registerModerationCallbacks(bot: Bot): void {
             reply_markup: { inline_keyboard: [] },
           },
         );
+
+        // Публичный варн в чате — морфим в «модератор оставил».
+        if (session.warningChatMessageId !== undefined) {
+          try {
+            // getChatMember на случай, если в session уже устаревшее имя/юзернейм.
+            const member = await ctx.api.getChatMember(config.chatId, userId);
+            await ctx.api.editMessageText(
+              config.chatId,
+              session.warningChatMessageId,
+              buildReactionWarningResolvedHtml(member.user),
+              { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
+            );
+          } catch (err) {
+            console.error("[mod-callback] edit public warning (keep) failed", err);
+          }
+        }
+
         await deleteReactionModSession(userId);
         await setReactionLeaveAlone(userId, config.reactionLeaveAloneTtlSec);
       } catch (err) {
@@ -86,6 +108,21 @@ export function registerModerationCallbacks(bot: Bot): void {
               reply_markup: { inline_keyboard: [] },
             },
           );
+
+          // Публичный варн — морфим в «подписался, вопросов нет».
+          if (session.warningChatMessageId !== undefined) {
+            try {
+              await ctx.api.editMessageText(
+                config.chatId,
+                session.warningChatMessageId,
+                buildReactionWarningSubscribedHtml(member.user),
+                { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
+              );
+            } catch (err) {
+              console.error("[mod-callback] edit public warning (subscribed) failed", err);
+            }
+          }
+
           await deleteReactionModSession(userId);
         } catch (err) {
           await logError(ctx.api, "правка сообщения «не баним»", err);
@@ -95,6 +132,21 @@ export function registerModerationCallbacks(bot: Bot): void {
 
       const reasonsForLog =
         session.reasons && session.reasons.length > 0 ? session.reasons : risk.reasons;
+
+      // Публичный варн — морфим в «заблокирован».
+      if (session.warningChatMessageId !== undefined) {
+        try {
+          const cap = config.reactionAutoBanStrikes;
+          await ctx.api.editMessageText(
+            config.chatId,
+            session.warningChatMessageId,
+            buildReactionWarningHtml(member.user, cap, cap),
+            { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
+          );
+        } catch (err) {
+          console.error("[mod-callback] edit public warning (ban) failed", err);
+        }
+      }
 
       await executeReactionBan({
         api: ctx.api,

@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { logError, logInfo } from "../logger.js";
 import {
   buildPendingModerationText,
+  buildReactionWarningHtml,
   pendingModerationKeyboard,
 } from "../moderation-card.js";
 import { computeRisk, hasSpamNickname, isAdminAnywhere } from "../moderation.js";
@@ -118,6 +119,7 @@ export function registerReactionHandler(bot: Bot): void {
       const windowMs = config.reactionAutoBanWindowMs;
       const windowSec = Math.round(windowMs / 1000);
       const ttlSec = config.reactionModSessionTtlSec;
+      const cap = config.reactionAutoBanStrikes;
 
       let session = await getReactionModSession(user.id);
       if (session && now - session.firstAt > windowMs) {
@@ -128,15 +130,24 @@ export function registerReactionHandler(bot: Bot): void {
       const thisEvent = { messageId: message_id, emojis: reactionEmojis(new_reaction) };
 
       if (!session) {
-        const text = buildPendingModerationText(user, risk.reasons, 1, windowSec);
+        const text = buildPendingModerationText(user, risk.reasons, 1, windowSec, cap);
         const keyboard = pendingModerationKeyboard(user.id, message_id);
         const sent = await ctx.api.sendMessage(config.moderationChatId, text, {
           parse_mode: "HTML",
           link_preview_options: { is_disabled: true },
           reply_markup: keyboard,
         });
+
+        // Публичный варн в основном чате — пинг + счётчик.
+        const warningChatMessageId = await sendPublicWarning(ctx.api, {
+          user,
+          strikeCount: 1,
+          cap,
+        });
+
         await setReactionModSession(user.id, {
           moderationMessageId: sent.message_id,
+          warningChatMessageId,
           strikeCount: 1,
           firstAt: now,
           lastDiscussionMessageId: message_id,
@@ -150,7 +161,14 @@ export function registerReactionHandler(bot: Bot): void {
       const lastDiscussionMessageId = message_id;
       const reactionEvents = [...(session.reactionEvents ?? []), thisEvent];
 
-      if (strikeCount >= 2 && now - session.firstAt <= windowMs) {
+      if (strikeCount >= cap && now - session.firstAt <= windowMs) {
+        // Сначала «закрываем» публичный варн в чате — морфим в «заблокирован».
+        await editPublicWarning(ctx.api, session.warningChatMessageId, {
+          user,
+          strikeCount: cap,
+          cap,
+        });
+
         await executeReactionBan({
           api: ctx.api,
           user,
@@ -173,7 +191,7 @@ export function registerReactionHandler(bot: Bot): void {
       };
       await setReactionModSession(user.id, next, ttlSec);
 
-      const editText = buildPendingModerationText(user, risk.reasons, strikeCount, windowSec);
+      const editText = buildPendingModerationText(user, risk.reasons, strikeCount, windowSec, cap);
       const editKb = pendingModerationKeyboard(user.id, lastDiscussionMessageId);
       await ctx.api.editMessageText(
         config.moderationChatId,
@@ -185,9 +203,59 @@ export function registerReactionHandler(bot: Bot): void {
           reply_markup: editKb,
         },
       );
+
+      // И обновляем счётчик в публичном варне (1/3 → 2/3).
+      await editPublicWarning(ctx.api, session.warningChatMessageId, {
+        user,
+        strikeCount,
+        cap,
+      });
     } catch (err) {
       console.error("reaction handler failed:", err);
       await logError(ctx.api, `обработка реакции от ${user.id}`, err);
     }
   });
+}
+
+async function sendPublicWarning(
+  api: Bot["api"],
+  params: {
+    user: Parameters<typeof buildReactionWarningHtml>[0];
+    strikeCount: number;
+    cap: number;
+  },
+): Promise<number | undefined> {
+  try {
+    const text = buildReactionWarningHtml(params.user, params.strikeCount, params.cap);
+    const sent = await api.sendMessage(config.chatId, text, {
+      parse_mode: "HTML",
+      link_preview_options: { is_disabled: true },
+    });
+    return sent.message_id;
+  } catch (err) {
+    console.error("[reaction] sendPublicWarning failed", err);
+    return undefined;
+  }
+}
+
+async function editPublicWarning(
+  api: Bot["api"],
+  messageId: number | undefined,
+  params: {
+    user: Parameters<typeof buildReactionWarningHtml>[0];
+    strikeCount: number;
+    cap: number;
+  },
+): Promise<void> {
+  if (messageId === undefined) return;
+  try {
+    const text = buildReactionWarningHtml(params.user, params.strikeCount, params.cap);
+    await api.editMessageText(config.chatId, messageId, text, {
+      parse_mode: "HTML",
+      link_preview_options: { is_disabled: true },
+    });
+  } catch (err) {
+    // Если сообщение удалили или текст не изменился — не страшно.
+    console.error("[reaction] editPublicWarning failed", err);
+  }
 }

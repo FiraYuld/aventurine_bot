@@ -8,6 +8,12 @@ export interface ReactionModEvent {
 
 export interface ReactionModSession {
   moderationMessageId: number;
+  /**
+   * ID публичного варн-сообщения от бота в основном чате (с пингом и
+   * счётчиком 1/3, 2/3, …). Редактируется при каждом следующем страйке
+   * вместо нового сообщения, чтобы не спамить чат.
+   */
+  warningChatMessageId?: number;
   strikeCount: number;
   firstAt: number;
   lastDiscussionMessageId: number;

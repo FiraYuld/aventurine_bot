@@ -91,8 +91,10 @@ function loadConfig() {
     moderationChatId: requiredInt("MODERATION_CHAT_ID"),
     upstashRedisRestUrl: required("UPSTASH_REDIS_REST_URL"),
     upstashRedisRestToken: required("UPSTASH_REDIS_REST_TOKEN"),
-    /** Окно автобана: 2+ подозрительные реакции за это время (мс) */
+    /** Окно автобана: N+ подозрительных реакций за это время (мс) */
     reactionAutoBanWindowMs: 60_000,
+    /** Кап страйков (реакций) в окне до автобана. */
+    reactionAutoBanStrikes: 3,
     /** TTL ключа сессии в Redis (сек), чуть больше окна */
     reactionModSessionTtlSec: 120,
     /**
