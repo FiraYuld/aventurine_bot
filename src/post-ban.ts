@@ -10,6 +10,7 @@ export type BanLogTitle =
   | "Бан по реакции"
   | "Бан по кнопке"
   | "Автобан"
+  | "Автобан (спам-ник)"
   | "Бан бот-аккаунт";
 
 export async function sendBanCatchphraseReply(

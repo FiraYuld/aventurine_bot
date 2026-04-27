@@ -14,6 +14,10 @@ import {
 } from "./limits.js";
 import { sendLimitNoticeOncePerDay } from "./limit-notice.js";
 import { appendRecentMessage, getRecentMessages } from "./context.js";
+import {
+  getKnownStickerSetNames,
+  recordStickerSetName,
+} from "./chat-stickers.js";
 
 /** Регистрирует LLM-режим «Авантюрин общается в чате». */
 export function registerChatHandler(bot: Bot): void {
@@ -21,6 +25,24 @@ export function registerChatHandler(bot: Bot): void {
     console.info("[chat] LLM-режим выключен (LLM_API_KEY пуст) — хендлер не регистрируется");
     return;
   }
+
+  // Сбор имён стикерпаков, которые приносят люди в чат — потом Авантюрин
+  // подсматривает в эти паки и достаёт оттуда рандомный стикер. Без вызова
+  // LLM, никакого ответа на стикер не отправляем.
+  bot.on("message:sticker", async (ctx) => {
+    const chat = ctx.chat;
+    const sticker = ctx.message?.sticker;
+    if (!chat || !sticker) return;
+    if (chat.id !== config.chatId) return;
+    const setName = sticker.set_name;
+    if (!setName) return;
+    // Берём только обычные стикеры (включая видео/анимированные). Маски и
+    // кастомные эмодзи-стикеры sendSticker-ом пересылать смысла нет.
+    if (sticker.type === "mask" || sticker.type === "custom_emoji") return;
+    await recordStickerSetName(setName).catch((err) =>
+      console.error("[chat] recordStickerSetName failed", err),
+    );
+  });
 
   bot.on("message:text", async (ctx) => {
     const msg = ctx.message;
@@ -301,10 +323,11 @@ async function callLlmAndReply(
       );
     }
 
-    // Иногда добиваем фирменным стикером — работает и в основном чате, и в личке.
+    // Иногда добиваем рандомным стикером, подсмотренным из пака кого-то из
+    // чата. Брендовый пак больше не используем (там реклама).
     const chance = params.stickerChance ?? config.chatStickerChance;
     if (chance > 0 && Math.random() < chance) {
-      const sticker = await pickBrandStickerId(api);
+      const sticker = await pickRandomChatStickerId(api);
       if (sticker) {
         await api.sendSticker(params.chatId, sticker).catch((err) => {
           console.error("[chat] sendSticker failed", err);
@@ -344,10 +367,8 @@ function cleanOnePart(raw: string): string {
   if (!s) return "";
   // Иногда модель повторяет префикс «Авантюрин:» — убираем.
   s = s.replace(/^\s*(?:авантюрин|aventurine)\s*[:\-—]\s*/i, "");
-  // Убираем длинные тире.
+  // Длинные тире → короткий дефис (фирменный стиль).
   s = s.replace(/[—–]/g, "-");
-  // Чуть менее «идеальная» пунктуация: убираем часть запятых.
-  s = s.replace(/,\s+/g, " ");
   // Жёстко режем многословие: максимум 3 предложения.
   s = s
     .split(/(?<=[.!?])\s+/)
@@ -357,39 +378,89 @@ function cleanOnePart(raw: string): string {
     .trim();
   // Понижаем регистр первой буквы.
   if (s.length > 0) s = s[0]!.toLowerCase() + s.slice(1);
-  // Почти полностью режем пунктуацию.
-  const isQuestion =
-    /\?\s*$/.test(s) ||
-    /^\s*(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|чё|че)\b/i.test(s);
-  s = s.replace(/[!.,;:()"«»'”“]/g, "");
+  // Лёгкая «разговорность»: иногда отбрасываем финальную точку. Запятые и
+  // прочую пунктуацию НЕ трогаем - пусть будет умеренно грамотным.
+  if (Math.random() < 0.35) {
+    s = s.replace(/\.\s*$/, "");
+  }
+  // Двойные пробелы.
   s = s.replace(/\s{2,}/g, " ").trim();
-  // Вопросительный знак ставим только если это похоже на вопрос.
-  s = s.replace(/\?+$/g, "");
-  if (isQuestion) s = s + "?";
   // Жёсткий потолок длины — Telegram и так ограничивает ~4096, но лучше короче.
   if (s.length > 360) s = s.slice(0, 360).trimEnd() + "…";
   return s;
 }
 
-let cachedBrandStickerIds: string[] | undefined;
-async function pickBrandStickerId(
-  api: Parameters<typeof sendLimitNoticeOncePerDay>[0]["api"],
-): Promise<string | null> {
-  if (!cachedBrandStickerIds) {
-    try {
-      // По ссылке: https://t.me/addstickers/Avantyurak
-      const set = await api.getStickerSet("Avantyurak");
-      cachedBrandStickerIds = (set.stickers ?? [])
-        .map((s) => s.file_id)
-        .filter((id): id is string => typeof id === "string" && id.length > 0);
-    } catch (err) {
-      console.error("[chat] getStickerSet failed", err);
-      cachedBrandStickerIds = [];
-    }
+/**
+ * Кэш `getStickerSet` по имени пака. Чтобы каждый раз не дёргать Telegram,
+ * запоминаем file_id-ы стикеров на короткое время.
+ */
+interface CachedSet {
+  fileIds: string[];
+  fetchedAt: number;
+}
+const setCache = new Map<string, CachedSet>();
+const SET_CACHE_TTL_MS = 30 * 60 * 1000;
+const SET_FETCH_FAIL_TTL_MS = 5 * 60 * 1000;
+const setFetchFails = new Map<string, number>();
+
+async function getStickerFileIds(
+  api: Parameters<typeof sendLimitNoticeOncePerDay>[0]["api"] & {
+    getStickerSet: (name: string) => Promise<{ stickers?: ReadonlyArray<{ file_id?: string; type?: string }> }>;
+  },
+  setName: string,
+): Promise<string[]> {
+  const now = Date.now();
+  const cached = setCache.get(setName);
+  if (cached && now - cached.fetchedAt < SET_CACHE_TTL_MS) {
+    return cached.fileIds;
   }
-  if (cachedBrandStickerIds.length === 0) return null;
-  const idx = Math.floor(Math.random() * cachedBrandStickerIds.length);
-  return cachedBrandStickerIds[idx] ?? null;
+  const failedAt = setFetchFails.get(setName);
+  if (failedAt && now - failedAt < SET_FETCH_FAIL_TTL_MS) {
+    return [];
+  }
+  try {
+    const set = await api.getStickerSet(setName);
+    const fileIds = (set.stickers ?? [])
+      .filter((s) => s.type !== "mask" && s.type !== "custom_emoji")
+      .map((s) => s.file_id)
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    setCache.set(setName, { fileIds, fetchedAt: now });
+    setFetchFails.delete(setName);
+    return fileIds;
+  } catch (err) {
+    console.error(`[chat] getStickerSet(${setName}) failed`, err);
+    setFetchFails.set(setName, now);
+    return [];
+  }
+}
+
+/**
+ * Возвращает file_id рандомного стикера из рандомного пака, который кто-то
+ * из чата приносил с собой. Если паков ещё не накопилось — null.
+ */
+async function pickRandomChatStickerId(
+  api: Parameters<typeof sendLimitNoticeOncePerDay>[0]["api"] & {
+    getStickerSet: (name: string) => Promise<{ stickers?: ReadonlyArray<{ file_id?: string; type?: string }> }>;
+  },
+): Promise<string | null> {
+  let setNames: string[];
+  try {
+    setNames = await getKnownStickerSetNames();
+  } catch (err) {
+    console.error("[chat] getKnownStickerSetNames failed", err);
+    return null;
+  }
+  if (setNames.length === 0) return null;
+
+  // До 3 попыток на случай, если конкретный пак удалили или он пустой.
+  const shuffled = [...setNames].sort(() => Math.random() - 0.5);
+  for (const name of shuffled.slice(0, 3)) {
+    const ids = await getStickerFileIds(api, name);
+    if (ids.length === 0) continue;
+    const id = ids[Math.floor(Math.random() * ids.length)];
+    if (id) return id;
+  }
+  return null;
 }
 
 // ---------- Вспомогательные ----------

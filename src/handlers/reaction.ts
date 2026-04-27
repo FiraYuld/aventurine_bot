@@ -5,7 +5,7 @@ import {
   buildPendingModerationText,
   pendingModerationKeyboard,
 } from "../moderation-card.js";
-import { computeRisk, isAdminAnywhere } from "../moderation.js";
+import { computeRisk, hasSpamNickname, isAdminAnywhere } from "../moderation.js";
 import { executeReactionBan } from "../post-ban.js";
 import {
   deleteReactionModSession,
@@ -89,6 +89,28 @@ export function registerReactionHandler(bot: Bot): void {
       if (!risk.shouldBan) return;
 
       if (await isReactionLeaveAlone(user.id)) {
+        return;
+      }
+
+      // Спам-маркер в нике («НЕ НАЖИМАЙ СЮДА!» и тп) — характерная приманка
+      // спам-ботов. Не ждём второго страйка, валим сразу после первой реакции.
+      if (hasSpamNickname(user)) {
+        const reasons = [...risk.reasons, "спам-маркер в нике"];
+        const existing = await getReactionModSession(user.id);
+        await executeReactionBan({
+          api: ctx.api,
+          user,
+          userId: user.id,
+          reasons,
+          discussionMessageId: message_id,
+          logTitle: "Автобан (спам-ник)",
+          reactionEvents: [
+            ...(existing?.reactionEvents ?? []),
+            { messageId: message_id, emojis: reactionEmojis(new_reaction) },
+          ],
+          replaceModerationMessageId: existing?.moderationMessageId,
+        });
+        await deleteReactionModSession(user.id);
         return;
       }
 
