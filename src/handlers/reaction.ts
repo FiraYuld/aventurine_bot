@@ -1,6 +1,13 @@
 import type { Bot } from "grammy";
+import { GrammyError } from "grammy";
 import { config } from "../config.js";
-import { logError, logInfo } from "../logger.js";
+import {
+  discussionPostPublicLink,
+  escapeHtml,
+  formatActorChatHtml,
+  logError,
+  logInfo,
+} from "../logger.js";
 import {
   buildPendingModerationText,
   buildReactionWarningHtml,
@@ -58,9 +65,39 @@ export function registerReactionHandler(bot: Bot): void {
 
     if (!user) {
       if (actor_chat) {
+        const msgUrl = discussionPostPublicLink(config.chatId, message_id);
+        const em = reactionEmojis(new_reaction).map(escapeHtml).join(" ");
+        const actorLine = formatActorChatHtml(actor_chat);
+        const msgLink = `<a href="${escapeHtml(msgUrl)}">сообщение ${message_id}</a>`;
+
+        let banLine: string;
+        if (actor_chat.id === config.channelId) {
+          banLine =
+            "\n\n<b>Исключение из обсуждения:</b> не выполнялось — это привязанный канал (реакция от его имени).";
+        } else if (actor_chat.id === config.chatId) {
+          banLine =
+            "\n\n<b>Исключение из обсуждения:</b> не выполнялось — источник совпадает с чатом обсуждения.";
+        } else {
+          try {
+            await ctx.api.banChatMember(config.chatId, actor_chat.id, { revoke_messages: true });
+            banLine = "\n\n<b>Исключение из обсуждения:</b> выполнено (<code>banChatMember</code>).";
+          } catch (err) {
+            const desc =
+              err instanceof GrammyError
+                ? err.description
+                : err instanceof Error
+                  ? err.message
+                  : String(err);
+            banLine =
+              `\n\n<b>Исключение из обсуждения:</b> API не дал — <code>${escapeHtml(desc)}</code>. ` +
+              "Можно вручную ограничить участника по ссылке на чат выше (если это канал в группе — через список участников).";
+          }
+        }
+
         await logInfo(
           ctx.api,
-          `ℹ️ Анонимная реакция от чата <code>${actor_chat.id}</code> на сообщение <code>${message_id}</code>. Бан невозможен.`,
+          `ℹ️ <b>Анонимная реакция</b> ${em ? `(${em}) ` : ""}на ${msgLink}\n\n` +
+            `<b>От чьего имени:</b> ${actorLine}.${banLine}`,
         );
       }
       return;

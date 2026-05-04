@@ -1,5 +1,5 @@
 import type { Api } from "grammy";
-import type { User } from "grammy/types";
+import type { Chat, User } from "grammy/types";
 import { config } from "./config.js";
 
 export function escapeHtml(text: string): string {
@@ -14,6 +14,47 @@ export function discussionPostPublicLink(chatId: number, messageId: number): str
   const s = String(chatId);
   const slug = s.startsWith("-100") ? s.slice(4) : s.replace(/^-/, "");
   return `https://t.me/c/${slug}/${messageId}`;
+}
+
+/** Публичная ссылка на чат (канал / супергруппу): @username или t.me/c/… */
+export function chatPublicLink(chat: Chat): string | undefined {
+  if (chat.type === "private") {
+    return chat.username ? `https://t.me/${chat.username}` : undefined;
+  }
+  if (chat.username) return `https://t.me/${chat.username}`;
+  const s = String(chat.id);
+  const slug = s.startsWith("-100") ? s.slice(4) : s.replace(/^-/, "");
+  if (!slug) return undefined;
+  return `https://t.me/c/${slug}/1`;
+}
+
+function chatTypeRu(type: Chat["type"]): string {
+  switch (type) {
+    case "channel":
+      return "канал";
+    case "supergroup":
+      return "супергруппа";
+    case "group":
+      return "группа";
+    case "private":
+      return "личка";
+    default:
+      return type;
+  }
+}
+
+/** Человекочитаемая строка для логов: кто поставил реакцию от имени чата (анонимно). */
+export function formatActorChatHtml(chat: Chat): string {
+  const url = chatPublicLink(chat);
+  const titleRaw =
+    chat.type === "private"
+      ? [chat.first_name, chat.last_name].filter(Boolean).join(" ")
+      : chat.title ?? "";
+  const safeTitle = escapeHtml(titleRaw.trim() || `id ${chat.id}`);
+  const linked = url ? `<a href="${escapeHtml(url)}">${safeTitle}</a>` : safeTitle;
+  const un = "username" in chat && chat.username ? ` · @${escapeHtml(chat.username)}` : "";
+  const typeRu = escapeHtml(chatTypeRu(chat.type));
+  return `${linked} (${typeRu})${un} · <code>${chat.id}</code>`;
 }
 
 export function formatUserLine(user: User): string {
