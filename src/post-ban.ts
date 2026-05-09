@@ -2,7 +2,7 @@ import type { Api } from "grammy";
 import type { User } from "grammy/types";
 import { config } from "./config.js";
 import { buildBanLogHtml, logBan, logError, type ReactionEventLog } from "./logger.js";
-import { banEverywhere } from "./moderation.js";
+import { banEverywhere, deleteAllReactionsOf } from "./moderation.js";
 
 export const BAN_CATCHPHRASE = "Схватил бота за жёпу!";
 
@@ -78,6 +78,19 @@ export async function executeReactionBan(params: {
       ? { messageId: params.replaceModerationMessageId }
       : undefined,
   );
+  // Bot API 10.0: чистим оставленные забаненным пользователем реакции.
+  // Если бан в чате не прошёл — звать метод бессмысленно (всё равно прав не
+  // хватит / реакции не наши). Ошибки самой чистки не аффектят бан-флоу.
+  if (outcome.bannedInChat) {
+    const wipe = await deleteAllReactionsOf(params.api, params.userId);
+    if (!wipe.ok) {
+      await logError(
+        params.api,
+        `снятие реакций после бана у ${params.userId}`,
+        wipe.error ?? "unknown error",
+      );
+    }
+  }
   try {
     await sendBanCatchphraseReply(params.api, params.discussionMessageId);
   } catch (err) {

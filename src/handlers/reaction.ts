@@ -13,6 +13,7 @@ import {
   buildReactionWarningHtml,
   pendingModerationKeyboard,
 } from "../moderation-card.js";
+import { isChannelIgnored } from "../ignored-channels.js";
 import { computeRisk, hasSpamNickname, isAdminAnywhere } from "../moderation.js";
 import { executeReactionBan } from "../post-ban.js";
 import {
@@ -77,6 +78,9 @@ export function registerReactionHandler(bot: Bot): void {
         } else if (actor_chat.id === config.chatId) {
           banLine =
             "\n\n<b>Исключение из обсуждения:</b> не выполнялось — источник совпадает с чатом обсуждения.";
+        } else if (await isChannelIgnored(actor_chat.id)) {
+          banLine =
+            "\n\n<b>Исключение из обсуждения:</b> не выполнялось — канал в ignore-list (см. /ignore_channel_list).";
         } else {
           try {
             await ctx.api.banChatMember(config.chatId, actor_chat.id, { revoke_messages: true });

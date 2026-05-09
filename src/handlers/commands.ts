@@ -1,5 +1,11 @@
 import type { Bot, CommandContext, Context } from "grammy";
 import { config } from "../config.js";
+import {
+  addIgnoredChannel,
+  listIgnoredChannels,
+  removeIgnoredChannel,
+} from "../ignored-channels.js";
+import { escapeHtml } from "../logger.js";
 import { isAdminAnywhere } from "../moderation.js";
 import { clearReactionLeaveAlone } from "../reaction-mod-session.js";
 import {
@@ -35,6 +41,9 @@ const HELP_TEXT = `
 /limits_reset [@username] — только владелец: сбросить суточные LLM-лимиты (сегодня).
 /limits_reset_all — только владелец: сбросить лимиты всем пользователям (сегодня).
 /clear_react_leave user_id — только владелец: снять иммунитет после кнопки «Оставить».
+/ignore_channel &lt;id|@username&gt; — только владелец: добавить канал в ignore-list (его реакции не считаются спамом).
+/ignore_channel_remove &lt;id|@username&gt; — только владелец: убрать канал из ignore-list.
+/ignore_channel_list — только владелец: показать ignore-list.
 /unban — владелец или администраторы канала/чата обсуждения.
 `.trim();
 
@@ -173,6 +182,101 @@ export function registerCommands(bot: Bot): void {
     );
   });
 
+  bot.command("ignore_channel", async (ctx) => {
+    if (!ctx.from || !isOwner(ctx.from.id)) return;
+
+    const arg = ctx.match?.toString().trim();
+    if (!arg) {
+      await ctx.reply("Использование: /ignore_channel <id|@username>");
+      return;
+    }
+
+    const channelId = await resolveChannelId(ctx, arg);
+    if (channelId === null) {
+      await ctx.reply(
+        "Не смог распознать канал. Жду отрицательный id (например, <code>-1001234567890</code>) или <code>@username</code>.",
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+
+    if (channelId === config.channelId) {
+      await ctx.reply(
+        "Это привязанный канал — он и так исключён по умолчанию, добавлять в список не нужно.",
+      );
+      return;
+    }
+    if (channelId === config.chatId) {
+      await ctx.reply(
+        "Это сам чат обсуждения — он и так исключён по умолчанию, добавлять в список не нужно.",
+      );
+      return;
+    }
+
+    const added = await addIgnoredChannel(channelId);
+    await ctx.reply(
+      added
+        ? `Канал <code>${channelId}</code> добавлен в ignore-list. Реакции от его имени больше не будут считаться спамом.`
+        : `Канал <code>${channelId}</code> уже был в ignore-list.`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.command("ignore_channel_remove", async (ctx) => {
+    if (!ctx.from || !isOwner(ctx.from.id)) return;
+
+    const arg = ctx.match?.toString().trim();
+    if (!arg) {
+      await ctx.reply("Использование: /ignore_channel_remove <id|@username>");
+      return;
+    }
+
+    const channelId = await resolveChannelId(ctx, arg);
+    if (channelId === null) {
+      await ctx.reply(
+        "Не смог распознать канал. Жду отрицательный id или <code>@username</code>.",
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+
+    const removed = await removeIgnoredChannel(channelId);
+    await ctx.reply(
+      removed
+        ? `Канал <code>${channelId}</code> убран из ignore-list.`
+        : `Канал <code>${channelId}</code> не был в ignore-list.`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  bot.command("ignore_channel_list", async (ctx) => {
+    if (!ctx.from || !isOwner(ctx.from.id)) return;
+
+    const ids = await listIgnoredChannels();
+    if (ids.length === 0) {
+      await ctx.reply("Ignore-list пуст.");
+      return;
+    }
+
+    const lines: string[] = [];
+    for (const id of ids) {
+      try {
+        const chat = await ctx.api.getChat(id);
+        const title = "title" in chat && chat.title ? chat.title : "(без названия)";
+        const username = "username" in chat && chat.username ? chat.username : "";
+        const userPart = username ? ` @${escapeHtml(username)}` : "";
+        lines.push(`• <code>${id}</code> — ${escapeHtml(title)}${userPart}`);
+      } catch {
+        lines.push(`• <code>${id}</code> — (не удалось получить getChat)`);
+      }
+    }
+
+    await ctx.reply(
+      `<b>Ignore-list каналов</b> (${ids.length}):\n${lines.join("\n")}`,
+      { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
+    );
+  });
+
   bot.command("unban", async (ctx) => {
     if (!ctx.from) return;
     const allowed =
@@ -222,6 +326,37 @@ async function resolveUserId(
     const chat = await ctx.api.getChat(raw);
     // Для пользователя это будет private-чат с положительным id.
     if (chat && "id" in chat && typeof chat.id === "number" && chat.id > 0) return chat.id;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Резолвит произвольный аргумент в ID канала (отрицательное число).
+ * Принимает: отрицательное целое (как в supergroup/channel id, например
+ * <code>-1001234567890</code>) или <code>@username</code>. Положительные id
+ * не принимаются — они адресуют пользователей, а не каналы.
+ */
+async function resolveChannelId(
+  ctx: CommandContext<Context>,
+  arg: string,
+): Promise<number | null> {
+  const raw = arg.trim();
+  if (!raw) return null;
+
+  if (/^-?\d+$/.test(raw)) {
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n >= 0) return null;
+    return n;
+  }
+
+  const username = raw.startsWith("@") ? raw : `@${raw}`;
+  try {
+    const chat = await ctx.api.getChat(username);
+    if (chat && "id" in chat && typeof chat.id === "number" && chat.id < 0) {
+      return chat.id;
+    }
     return null;
   } catch {
     return null;
