@@ -1,5 +1,5 @@
 import type { Bot, CommandContext, Context } from "grammy";
-import { config } from "../config.js";
+import { config, isLlmUnlimitedDmUser, isOwnerUserId } from "../config.js";
 import {
   addIgnoredChannel,
   listIgnoredChannels,
@@ -11,9 +11,11 @@ import { clearReactionLeaveAlone } from "../reaction-mod-session.js";
 import {
   currentDateKey,
   getGlobalMessageCounter,
+  getLlmDmUsed,
   getRandomUsed,
   getUserUsed,
   resetAllUserQuotasForToday,
+  resetLlmDmUsageForToday,
   resetGlobalMessageCounterForToday,
   resetRandomQuotaForToday,
   resetUserLimitNoticeForToday,
@@ -22,7 +24,7 @@ import {
 } from "../chat/limits.js";
 
 function isOwner(userId: number): boolean {
-  return userId === config.adminLogChatId;
+  return isOwnerUserId(userId);
 }
 
 const HELP_TEXT = `
@@ -37,7 +39,7 @@ const HELP_TEXT = `
 
 Команды:
 /ping, /status, /start, /help — только владелец (ADMIN_LOG_CHAT_ID).
-/limits [@username] — только владелец: показать суточные LLM-лимиты (сегодня).
+/limits [@username] — только владелец: суточные LLM-лимиты и счётчик лички (без лимита).
 /limits_reset [@username] — только владелец: сбросить суточные LLM-лимиты (сегодня).
 /limits_reset_all — только владелец: сбросить лимиты всем пользователям (сегодня).
 /clear_react_leave user_id — только владелец: снять иммунитет после кнопки «Оставить».
@@ -73,15 +75,16 @@ export function registerCommands(bot: Bot): void {
       return;
     }
 
-    const [usedUser, usedRandom, msgcnt] = await Promise.all([
+    const [usedUser, usedRandom, msgcnt, llmDmUsed] = await Promise.all([
       getUserUsed(userId),
       getRandomUsed(),
       getGlobalMessageCounter(),
+      isLlmUnlimitedDmUser(userId) ? getLlmDmUsed(userId) : Promise.resolve(null),
     ]);
 
     const date = currentDateKey();
     const ttl = ttlUntilMidnightSec();
-    const text =
+    let text =
       `<b>LLM лимиты (сегодня)</b>\n` +
       `дата: <code>${date}</code>, ttl до полуночи: <code>${ttl}</code> сек\n\n` +
       `<b>Пользователь</b> <code>${userId}</code>\n` +
@@ -89,6 +92,12 @@ export function registerCommands(bot: Bot): void {
       `<b>Чат</b>\n` +
       `random used: <code>${usedRandom}</code> / cap: <code>${config.chatDailyRandomCap}</code>\n` +
       `msg counter: <code>${msgcnt}</code> (для шага N)\n`;
+
+    if (llmDmUsed !== null) {
+      text +=
+        `\n<b>LLM в личке (без лимита)</b>\n` +
+        `ответов бота сегодня: <code>${llmDmUsed}</code>`;
+    }
 
     await ctx.reply(text, { parse_mode: "HTML" });
   });
@@ -106,10 +115,14 @@ export function registerCommands(bot: Bot): void {
     await Promise.all([
       resetUserQuotaForToday(userId),
       resetUserLimitNoticeForToday(userId),
+      isLlmUnlimitedDmUser(userId) ? resetLlmDmUsageForToday(userId) : Promise.resolve(),
     ]);
 
+    const dmNote = isLlmUnlimitedDmUser(userId)
+      ? " (включая счётчик LLM в личке)"
+      : "";
     await ctx.reply(
-      `Сбросил LLM-лимиты на сегодня.\nuser <code>${userId}</code> очищен.`,
+      `Сбросил LLM-лимиты на сегодня${dmNote}.\nuser <code>${userId}</code> очищен.`,
       { parse_mode: "HTML" },
     );
   });

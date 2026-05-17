@@ -59,6 +59,17 @@ function optionalEnum<T extends string>(
   return raw as T;
 }
 
+/** Список положительных user id через запятую. */
+function optionalUserIdList(name: string, defaultRaw: string): readonly number[] {
+  const raw = optional(name) ?? defaultRaw;
+  const ids = new Set<number>();
+  for (const part of raw.split(",")) {
+    const n = Number(part.trim());
+    if (Number.isInteger(n) && n > 0) ids.add(n);
+  }
+  return [...ids];
+}
+
 const LLM_PROVIDERS = ["openai", "anthropic", "openrouter"] as const;
 export type LlmProvider = (typeof LLM_PROVIDERS)[number];
 
@@ -119,6 +130,11 @@ function loadConfig() {
     chatDailyRandomCap: optionalInt("CHAT_DAILY_RANDOM_CAP", 50),
     /** Потолок ответов на одного пользователя в сутки (триггер «Авантюрин» + продолжение диалога). */
     chatUserDailyCap: optionalInt("CHAT_USER_DAILY_CAP", 5),
+    /**
+     * User id, которым разрешена личка с ботом для LLM без суточного лимита.
+     * Счётчик ответов ведётся отдельно (см. getLlmDmUsed). По умолчанию 493002207.
+     */
+    llmUnlimitedDmUserIds: optionalUserIdList("LLM_UNLIMITED_DM_USER_IDS", "493002207"),
     /** Вероятность добить ответ фирменным стикером, 0..1. */
     chatStickerChance: optionalFloat("CHAT_STICKER_CHANCE", 0.25),
     /** Вероятность добить стикером в рандом-ремарке (она короче и живее). */
@@ -140,6 +156,20 @@ export function getConfig(): Config {
 /** LLM-режим включён, если задан ключ. */
 export function isLlmEnabled(cfg: Config = getConfig()): boolean {
   return Boolean(cfg.llmApiKey);
+}
+
+export function isOwnerUserId(userId: number, cfg: Config = getConfig()): boolean {
+  return userId === cfg.adminLogChatId;
+}
+
+/** Личка с ботом для LLM: владелец или пользователи из LLM_UNLIMITED_DM_USER_IDS. */
+export function isLlmPrivateDmUser(userId: number, cfg: Config = getConfig()): boolean {
+  return isOwnerUserId(userId, cfg) || cfg.llmUnlimitedDmUserIds.includes(userId);
+}
+
+/** Без суточного лимита chatUserDailyCap (только для привилегированных, не владелец). */
+export function isLlmUnlimitedDmUser(userId: number, cfg: Config = getConfig()): boolean {
+  return cfg.llmUnlimitedDmUserIds.includes(userId);
 }
 
 /** Доступ к конфигу; при первом обращении читает env (как и раньше). */

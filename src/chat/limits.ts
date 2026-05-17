@@ -68,6 +68,11 @@ function usersSeenKey(date: string): string {
   return `chat:users:${date}`;
 }
 
+/** Ответы LLM в личке привилегированным пользователям (без потолка, только учёт). */
+function llmDmUsageKey(userId: number, date: string): string {
+  return `chat:llm-dm:${userId}:${date}`;
+}
+
 async function incrWithTtl(key: string, ttlSec: number): Promise<number> {
   const r = getRedis();
   const next = (await r.incr(key)) as number;
@@ -101,6 +106,31 @@ export async function tryConsumeUserQuota(userId: number): Promise<{
     return { allowed: false, used, cap };
   }
   return { allowed: true, used, cap };
+}
+
+/**
+ * Учёт одного ответа LLM в личке (привилегированный пользователь, без лимита).
+ * Возвращает счётчик за сегодня после инкремента.
+ */
+export async function trackLlmDmReply(userId: number): Promise<number> {
+  const date = currentDateKey();
+  const ttl = ttlUntilMidnightSec();
+  return await incrWithTtl(llmDmUsageKey(userId, date), ttl);
+}
+
+/** Сколько ответов LLM в личке уже было сегодня (без инкремента). */
+export async function getLlmDmUsed(userId: number): Promise<number> {
+  const date = currentDateKey();
+  const v = await getRedis().get(llmDmUsageKey(userId, date));
+  if (v == null) return 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Сброс счётчика LLM-лички за сегодня (админ). */
+export async function resetLlmDmUsageForToday(userId: number): Promise<void> {
+  const date = currentDateKey();
+  await getRedis().del(llmDmUsageKey(userId, date));
 }
 
 /** Сколько ответов уже потрачено пользователем сегодня (без инкремента). */

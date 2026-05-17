@@ -1,6 +1,12 @@
 import type { Bot } from "grammy";
 import type { Message, User } from "grammy/types";
-import { config, isLlmEnabled } from "../config.js";
+import {
+  config,
+  isLlmEnabled,
+  isLlmPrivateDmUser,
+  isLlmUnlimitedDmUser,
+  isOwnerUserId,
+} from "../config.js";
 import {
   ADDRESSED_MODE_HINT,
   AVENTURINE_SYSTEM_PROMPT,
@@ -9,6 +15,7 @@ import {
 import { getLlmClient, type LlmMessage } from "./llm.js";
 import {
   incGlobalMessageCounter,
+  trackLlmDmReply,
   tryConsumeRandomQuota,
   tryConsumeUserQuota,
 } from "./limits.js";
@@ -55,10 +62,11 @@ export function registerChatHandler(bot: Bot): void {
     // Сам бот — игнор.
     if (from.is_bot) return;
 
-    // LLM-режим: личка владельца (без лимитов) и основной чат обсуждения (с лимитами).
-    const inOwnerDm = chat.type === "private" && from.id === config.adminLogChatId;
+    // LLM-режим: личка владельца / привилегированных пользователей и чат обсуждения.
+    const inPrivateLlmDm = chat.type === "private" && isLlmPrivateDmUser(from.id);
+    const inUnlimitedDm = chat.type === "private" && isLlmUnlimitedDmUser(from.id);
     const inMainChat = chat.id === config.chatId;
-    if (!inOwnerDm && !inMainChat) return;
+    if (!inPrivateLlmDm && !inMainChat) return;
 
     const client = getLlmClient();
     if (!client) return;
@@ -74,13 +82,14 @@ export function registerChatHandler(bot: Bot): void {
         fromBot: false,
       }).catch((err) => console.error("[chat] appendRecentMessage", err));
 
-      const addressed = isAddressed({
-        text: msg.text,
-        entities: msg.entities ?? [],
-        replyTo: msg.reply_to_message,
-        botId,
-        botUsername,
-      });
+      const addressed =
+        isAddressed({
+          text: msg.text,
+          entities: msg.entities ?? [],
+          replyTo: msg.reply_to_message,
+          botId,
+          botUsername,
+        }) || inUnlimitedDm;
 
       if (addressed) {
         await handleAddressed(ctx.api, {
@@ -167,11 +176,11 @@ async function handleAddressed(
     repliedToBotText?: string;
   },
 ): Promise<void> {
-  // В личке владельца отвечаем без лимитов (для отладки и настройки персонажа).
-  // Для остальных чатов/пользователей лимит остаётся, но сейчас хендлер
-  // зарегистрирован только для owner-DM.
-  const isOwner = params.chatId === params.user.id && params.user.id === config.adminLogChatId;
-  if (!isOwner) {
+  const inPrivateDm = params.chatId === params.user.id;
+  const ownerDm = inPrivateDm && isOwnerUserId(params.user.id);
+  const unlimitedDm = inPrivateDm && isLlmUnlimitedDmUser(params.user.id);
+
+  if (!ownerDm && !unlimitedDm) {
     const quota = await tryConsumeUserQuota(params.user.id);
     if (!quota.allowed) {
       await sendLimitNoticeOncePerDay({
@@ -192,12 +201,18 @@ async function handleAddressed(
     repliedToBotText: params.repliedToBotText,
   });
 
-  await callLlmAndReply(api, {
+  const replied = await callLlmAndReply(api, {
     chatId: params.chatId,
     replyToMessageId: params.messageId,
     system: `${AVENTURINE_SYSTEM_PROMPT}\n\n${ADDRESSED_MODE_HINT}`,
     messages,
   });
+
+  if (unlimitedDm && replied) {
+    await trackLlmDmReply(params.user.id).catch((err) =>
+      console.error("[chat] trackLlmDmReply failed", err),
+    );
+  }
 }
 
 function buildAddressedMessages(params: {
@@ -289,9 +304,9 @@ async function callLlmAndReply(
     /** Переопределение шанса добить стикером. По умолчанию — config.chatStickerChance. */
     stickerChance?: number;
   },
-): Promise<void> {
+): Promise<boolean> {
   const client = getLlmClient();
-  if (!client) return;
+  if (!client) return false;
 
   let parts: string[];
   try {
@@ -302,10 +317,10 @@ async function callLlmAndReply(
     parts = postProcessReply(out.text);
   } catch (err) {
     console.error("[chat] LLM error", err);
-    return;
+    return false;
   }
 
-  if (parts.length === 0) return;
+  if (parts.length === 0) return false;
 
   try {
     for (let i = 0; i < parts.length; i++) {
@@ -334,8 +349,10 @@ async function callLlmAndReply(
         });
       }
     }
+    return true;
   } catch (err) {
     console.error("[chat] sendMessage failed", err);
+    return false;
   }
 }
 
