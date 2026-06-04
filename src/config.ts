@@ -131,10 +131,10 @@ function loadConfig() {
     /** Потолок ответов на одного пользователя в сутки (триггер «Авантюрин» + продолжение диалога). */
     chatUserDailyCap: optionalInt("CHAT_USER_DAILY_CAP", 5),
     /**
-     * User id, которым разрешена личка с ботом для LLM без суточного лимита.
-     * Счётчик ответов ведётся отдельно (см. getLlmDmUsed). По умолчанию 493002207.
+     * User id (через запятую) с доступом к LLM в личке без суточного лимита.
+     * Только из env LLM_UNLIMITED_DM_USER_IDS; в коде дефолтов нет.
      */
-    llmUnlimitedDmUserIds: optionalUserIdList("LLM_UNLIMITED_DM_USER_IDS", "493002207"),
+    llmUnlimitedDmUserIds: optionalUserIdList("LLM_UNLIMITED_DM_USER_IDS", ""),
     /** Вероятность добить ответ фирменным стикером, 0..1. */
     chatStickerChance: optionalFloat("CHAT_STICKER_CHANCE", 0.25),
     /** Вероятность добить стикером в рандом-ремарке (она короче и живее). */
