@@ -1,8 +1,21 @@
 {
   "name": "avanturin-bot",
   "version": "1.0.0",
-  "private": true,
-  "description": "Telegram-бот Авантюрин: модерация реакций в привязанном к каналу чате",
+  "license": "MIT",
+  "description": "Open-source Telegram bot: reaction moderation for channel-linked discussion groups",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FiraYuld/aventurine_bot.git"
+  },
+  "keywords": [
+    "telegram",
+    "telegram-bot",
+    "moderation",
+    "grammy",
+    "vercel",
+    "spam",
+    "reactions"
+  ],
   "type": "module",
   "engines": {
     "node": ">=20.0.0"

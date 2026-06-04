@@ -1,343 +1,173 @@
-# Авантюрин — модератор реакций
+# Aventurine Bot
 
-Telegram-бот, который ловит подозрительные реакции в привязанном к каналу чате
-обсуждения (в первую очередь «не подписан на канал»). Карточка с кнопками уходит
-в чат модерации; бот-аккаунты банятся сразу. Бан выполняется и в чате, и в канале.
+**Open-source Telegram bot for moderating reactions in a channel-linked discussion group** — built for communities that want to keep reactions enabled while fighting spam bots and drive-by reactors who are not subscribed to the channel.
 
-Стек: **Node.js 20+**, **TypeScript**, **[grammY](https://grammy.dev/)**,
-хостинг на **Vercel** (бесплатный Hobby-план).
+Production stack: **Node.js 20+**, **TypeScript**, **[grammY](https://grammy.dev/)**, **Vercel** serverless webhooks, **Upstash Redis**.
 
----
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
+[![Telegram Bot API](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4)](https://core.telegram.org/bots/api)
 
-## Как работает
-
-1. Telegram присылает webhook на `/api/telegram`, когда кто-то меняет реакцию в чате.
-2. Бот проверяет:
-   - является ли отправитель админом чата/канала (если да — игнор);
-   - является ли он ботом (если да — немедленный бан и лог в чат модерации);
-   - подписан ли он на канал через `getChatMember` и прочий риск-скоринг.
-3. Если человек попадает под правило «надо банить» (сейчас это в основном «не подписан на канал»):
-   в **чат модерации** (`MODERATION_CHAT_ID`) уходит сообщение с кнопками **Забанить** / **Оставить**.
-4. Если за **60 секунд** с первой такой реакции пользователь снова добавляет/меняет реакцию (в т.ч. на
-   **другом** сообщении в чате — как у ботов), а админы не нажали кнопку — **автобан** (нужен **Upstash Redis**).
-5. После любого бана по реакции бот отвечает на сообщение с реакцией фразой «Схватил бота за жёпу!».
-6. Дополнительные риск-сигналы (нет username, «подозрительное» имя) попадают в текст карточки.
-
-> **Ограничение Telegram Bot API:** реакции на посты самого канала не отдаются
-> поимённо ни одному боту (только агрегированные счётчики). Поэтому бот
-> модерирует реакции **только в привязанном чате**. Это не баг и не лень — это
-> проектное ограничение Telegram, обойти его можно только userbot'ом
-> (Telethon/Pyrogram), что в данный проект сознательно не входит.
+> **Russian documentation:** [docs/README.ru.md](docs/README.ru.md) (full setup guide in Russian).
 
 ---
 
-## Что нужно подготовить
+## Why this project exists
 
-### 1. Бот в @BotFather
+Large Telegram channels often face **reaction spam**: bot accounts flood discussion posts with emoji reactions. Disabling reactions entirely hurts legitimate subscribers. This bot offers a middle path:
 
-1. `/newbot` → имя `Авантюрин`, username (например `AvanturinModBot`).
-2. Сохранить полученный токен — это `TELEGRAM_BOT_TOKEN`.
-3. `/setprivacy` → выбрать бота → **Disable** (иначе бот не будет видеть
-   реакции и сообщения в группах).
-4. `/setjoingroups` → **Enable**.
+- Monitor `message_reaction` updates in the linked discussion supergroup
+- Flag users who react without being subscribed to the parent channel
+- Route decisions to a **moderator inbox** with inline **Ban** / **Keep** buttons
+- Auto-ban on repeated strikes within a time window
+- Instantly ban obvious bot accounts
+- After a ban, optionally **remove all reactions** from that user (Telegram Bot API 10.0 `deleteAllMessageReactions`)
 
-### 2. Права в канале и чате
-
-- **В канале**: добавить бота администратором с правом «Удалять подписчиков»
-  (Ban users / Remove users).
-- **В чате обсуждения**: добавить бота администратором с правами «Блокировка
-  пользователей», «Удаление сообщений» и возможность **писать сообщения**
-  (нужно для ответа «Схватил бота за жёпу!» под постом).
-- **В чате модерации** (`MODERATION_CHAT_ID`): добавить бота участником или
-  админом с правом отправлять сообщения (карточки и inline-кнопки).
-
-### 3. ID каналов
-
-Получить числовые ID можно у @username_to_id_bot или @getidsbot —
-переслать ему пост из канала и сообщение из чата.
-
-### 4. Владелец, модерация и Redis
-
-- `ADMIN_LOG_CHAT_ID` — **твой личный user ID** (у @userinfobot): только личка
-  (`/start`, `/help`, `/ping`, `/status`) и **технические** логи (`logError` /
-  `logInfo`). Один раз напиши боту `/start` в личке.
-- `MODERATION_CHAT_ID` — ID супергруппы, куда бот шлёт карточки с кнопками и
-  итоговые сообщения о банах.
-- `UPSTASH_REDIS_REST_URL` и `UPSTASH_REDIS_REST_TOKEN` — из консоли
-  [Upstash](https://upstash.com/) (Redis по REST). Без них на Vercel не
-  получится хранить «сессию» между двумя реакциями, то есть **автобан при 2+
-  за 60 с** не будет работать корректно.
+The optional **LLM persona mode** lets the bot reply in-character in the discussion chat (multi-provider: OpenAI, Anthropic, OpenRouter), with per-user daily quotas stored in Redis.
 
 ---
 
-## Локальная разработка
+## Features
+
+| Area | Capability |
+|------|------------|
+| **Reaction moderation** | Risk scoring (channel membership, username heuristics, spam nickname patterns) |
+| **Human-in-the-loop** | Moderation cards with inline keyboards; stale cards still work after Redis session expiry |
+| **Auto-ban** | Configurable strike window (default 3 reactions / 60s) via Redis sessions |
+| **Bot accounts** | Immediate ban on bot reactions |
+| **Anonymous reactions** | Detect `actor_chat` reactions; ban linked chats except allowlisted channels |
+| **Post-ban cleanup** | `deleteAllMessageReactions` after successful chat ban (API 10.0) |
+| **Channel allowlist** | Ignore reactions from trusted channels (`/ignore_channel`) |
+| **LLM chat mode** | Optional addressed + random replies; Redis rate limits; owner DM without caps |
+| **Ops** | Webhook setup endpoint, health check, staging via `BOT_ENV` |
+
+### Telegram API limitation (documented)
+
+Reactions on **channel posts** are not attributed to individual users in the Bot API — only aggregate counts. This bot moderates the **linked discussion group** only. That is a platform constraint, not a bug.
+
+---
+
+## Architecture
+
+```text
+Telegram webhook → /api/telegram (grammY)
+  ├── scope middleware (discussion chat, moderation chat, owner DM)
+  ├── commands (/status, /unban, ignore-list, LLM limits, …)
+  ├── message_reaction → risk → ban | moderation card | auto-ban
+  ├── callback_query → Ban / Keep (fresh + stale paths)
+  └── message:text → optional LLM persona (if LLM_API_KEY set)
+
+Redis (Upstash): reaction mod sessions, leave-alone immunity, LLM quotas
+```
+
+---
+
+## Quick start
+
+### Prerequisites
+
+1. Create a bot via [@BotFather](https://t.me/BotFather) — `/setprivacy` → **Disable**, `/setjoingroups` → **Enable**
+2. Add the bot as admin in: parent **channel** (ban users), **discussion supergroup** (ban + delete messages + send messages), **moderation supergroup** (send messages + inline buttons)
+3. [Upstash Redis](https://upstash.com/) REST credentials (required for strike sessions and auto-ban)
+4. Deploy to [Vercel](https://vercel.com/) or run locally with `vercel dev`
+
+### Environment
+
+Copy [`.env.example`](.env.example) to `.env` and fill in:
+
+| Variable | Description |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | From BotFather |
+| `TELEGRAM_WEBHOOK_SECRET` | Random secret (`openssl rand -hex 32`) |
+| `CHANNEL_ID` | Parent channel ID (`-100…`) |
+| `CHAT_ID` | Linked discussion supergroup ID |
+| `MODERATION_CHAT_ID` | Moderator supergroup for cards and ban logs |
+| `ADMIN_LOG_CHAT_ID` | Owner user ID (private commands + error logs) |
+| `UPSTASH_REDIS_REST_URL` / `TOKEN` | Upstash REST API |
+| `LLM_API_KEY` | Optional — enables persona mode |
+
+### Local development
 
 ```bash
-# Поставить зависимости
 npm install
-
-# Создать .env на основе примера
-cp .env.example .env
-# и заполнить значения
-
-# Проверить компиляцию TypeScript
+cp .env.example .env   # edit values
 npm run typecheck
-
-# Запустить локальный dev-сервер Vercel (потребуется vercel login).
-# Скрипт называется local, а не dev: иначе vercel dev рекурсивно вызывает сам себя
-# (см. https://vercel.link/recursive-invocation-of-commands).
-npm run local
+npm run local          # Vercel dev on :3000
 ```
 
-Для локального тестирования вебхуков понадобится туннель, например
-[ngrok](https://ngrok.com/):
+Expose webhooks with [ngrok](https://ngrok.com/) and register:
 
-```bash
-ngrok http 3000
-# затем установить webhook вручную:
-# https://<ngrok-url>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
+```text
+https://<your-tunnel>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 ```
 
-### Staging-среда (обязательно для экспериментов с LLM-режимом)
+Verify: `GET /api/health` → `bot_env`, `llm_enabled`, env presence flags.
 
-Чтобы случайно не сломать прод-модерацию, LLM-режим и любые крупные
-изменения сначала проверяются на **отдельном тестовом боте**, в **отдельном
-канале/чатах**, с **отдельной Upstash-БД**. Прод-бот и его webhook при этом
-не трогаются.
-
-Подготовка один раз:
-
-1. **Тестовый бот** у `@BotFather`: `/newbot` → новое имя (например
-   `AvanturinStagingBot`), свой токен. `/setprivacy` → Disable,
-   `/setjoingroups` → Enable (как у прод-бота).
-2. **Тестовые сущности**: отдельный небольшой канал, привязанный чат
-   обсуждения, отдельная группа модерации. Добавить тестового бота админом
-   во все три с такими же правами, как у прод-бота. ID забрать через
-   `@username_to_id_bot`.
-3. **Отдельная Upstash-БД** под staging (`UPSTASH_REDIS_REST_URL` и
-   `UPSTASH_REDIS_REST_TOKEN`). Прод-БД не трогаем — в ней живут сессии
-   реакционной модерации.
-4. Локально держим два файла (оба в `.gitignore`): `.env` для удобства и
-   `.env.staging` с тестовыми значениями.
-
-Цикл разработки:
+### Production deploy
 
 ```bash
-# 1. Поднять локальный сервер со staging-значениями.
-#    vercel dev по умолчанию читает .env — подменяем символической ссылкой или
-#    копируем нужные переменные перед запуском:
-cp .env.staging .env && npm run local
-
-# 2. В другом терминале открыть туннель:
-ngrok http 3000
-
-# 3. Установить webhook ТЕСТОВОГО бота на ngrok-URL:
-#    https://<ngrok>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET из .env.staging>
-```
-
-После остановки dev-сервера тестовый бот перестаёт отвечать (webhook бьётся
-в мёртвый туннель) — это нормально, прода это не касается. Прод-бота трогать
-не нужно: его webhook остаётся на Vercel-домене.
-
-Проверка, какая среда отвечает:
-
-- `/api/health` возвращает `bot_env` (`prod` или `staging`) и
-  `llm_enabled` (булево) — удобно убедиться, что webhook ведёт туда, куда
-  ждёшь.
-
----
-
-## Деплой на Vercel — пошагово
-
-```bash
-# Один раз: установить CLI
-npm i -g vercel
-vercel login
-
-# Сгенерировать секрет для вебхука (понадобится для env)
-openssl rand -hex 32
-
-# Привязать проект (создаст .vercel/)
 vercel link
-
-# Добавить env-переменные (production)
 vercel env add TELEGRAM_BOT_TOKEN production
-vercel env add TELEGRAM_WEBHOOK_SECRET production
-vercel env add CHANNEL_ID production
-vercel env add CHAT_ID production
-vercel env add ADMIN_LOG_CHAT_ID production
-vercel env add MODERATION_CHAT_ID production
-vercel env add UPSTASH_REDIS_REST_URL production
-vercel env add UPSTASH_REDIS_REST_TOKEN production
-
-# (опционально) LLM-режим — можно добавить позже, отдельным шагом
-# vercel env add LLM_API_KEY production
-# vercel env add LLM_PROVIDER production   # openai | anthropic | openrouter
-# vercel env add LLM_MODEL production
-
-# Деплой
+# … add all variables from .env.example
 vercel --prod
 ```
 
-После деплоя получишь URL вида `https://avanturin-bot-xxxx.vercel.app`.
+Then open `https://<your-domain>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>` once. Confirm `allowed_updates` includes `message_reaction` and `callback_query` (`?action=info`).
 
-### Установка webhook
+---
 
-Один раз открой в браузере:
+## Bot commands
 
+| Command | Who | Purpose |
+|---------|-----|---------|
+| `/start`, `/help`, `/ping`, `/status` | Owner | Health and setup checks |
+| `/limits [@user]` | Owner | LLM daily usage (chat + privileged DM counters) |
+| `/limits_reset`, `/limits_reset_all` | Owner | Reset LLM quotas |
+| `/clear_react_leave <user_id>` | Owner | Clear “Keep” immunity |
+| `/ignore_channel`, `/ignore_channel_remove`, `/ignore_channel_list` | Owner | Channel reaction allowlist |
+| `/unban <user_id>` | Owner or channel/discussion admins | Unban in discussion + channel |
+
+---
+
+## Project structure
+
+```text
+api/           Vercel serverless routes (telegram webhook, setup, health)
+src/
+  handlers/    reactions, moderation callbacks, commands
+  chat/        optional LLM persona, limits, context buffer
+  moderation.ts, post-ban.ts, reaction-mod-session.ts, …
+tools/chat-analysis/   offline chat export analysis (optional)
 ```
-https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
-```
-
-Должен вернуться JSON `{"ok": true, "message": "Webhook установлен на ..."}`.
-В нём же в `details` будет ответ `getWebhookInfo` — проверь, что
-`allowed_updates` содержит `message_reaction` и `callback_query` (после
-обновления кода снова вызови `/api/setup`, иначе кнопки не заработают).
-
-Полезные параметры:
-- `?action=info` — посмотреть текущее состояние webhook
-- `?action=delete` — удалить webhook (например, перед перенастройкой)
-- `?action=set` — установить (по умолчанию)
-
-Если видишь **500 / FUNCTION_INVOCATION_FAILED** на `/api/setup`:
-
-1. Открой **`/api/health`** — там видно, какие переменные окружения Vercel реально видит (только факт наличия, без значений).
-2. В панели Vercel переменные должны быть добавлены для среды **Production** (не только Preview). После правок env сделай **Redeploy** — иначе старый деплой без новых значений.
 
 ---
 
-## Команды бота
+## Security
 
-Обрабатываются личка владельца, чат обсуждения (`CHAT_ID`), чат модерации
-(`MODERATION_CHAT_ID`, в т.ч. команды `/unban`) и callback из чата модерации
-(см. `src/middleware/scope.ts`).
-
-- `/start`, `/help`, `/ping`, `/status` — только пользователь с ID = `ADMIN_LOG_CHAT_ID`.
-- `/unban <user_id>` — владелец или администраторы канала и чата обсуждения.
+- Secrets only in environment variables — never commit `.env`
+- `/api/setup` protected by `?key=` matching `TELEGRAM_WEBHOOK_SECRET`
+- Telegram webhook header `X-Telegram-Bot-Api-Secret-Token` validated by grammY
+- Revoke and rotate `TELEGRAM_BOT_TOKEN` if leaked
 
 ---
 
-## LLM-режим «Авантюрин общается в чате»
+## Contributing
 
-Бот может отвечать в чате обсуждения (`CHAT_ID`) **в стиле персонажа
-Авантюрин** из Honkai: Star Rail. Режим опциональный, подключается через
-внешний LLM API (OpenAI по умолчанию).
+Issues and pull requests are welcome. Please do not commit tokens or chat IDs from production.
 
-Когда бот вступает:
-
-- **По имени** — если кто-то пишет «Авантюрин» в сообщении (включая
-  словоформы: «Авантюрина», «Авантюрину», и т.п.), упоминает `@botname`
-  или **отвечает** на сообщение бота — это адресный триггер.
-- **Сам иногда** — каждое `CHAT_RANDOM_EVERY_N`-ное сообщение в чате бот
-  может кинуть короткую ремарку «от себя».
-
-Лимиты (жёсткие, хранятся в Redis, ключи TTL-ятся до полуночи `CHAT_TZ`):
-
-- **`CHAT_USER_DAILY_CAP`** (дефолт 5) — ответов **одному пользователю** в
-  сутки. В этот же бюджет попадает продолжение диалога: каждый реплай на
-  сообщение бота тоже расходует квоту пользователя.
-- **`CHAT_DAILY_RANDOM_CAP`** (дефолт 50) — «рандомных» вставок **на весь
-  чат** в сутки.
-- **`LLM_MAX_OUTPUT_TOKENS`** (дефолт 240) — потолок длины ответа.
-
-Поведение при исчерпании лимита пользователя:
-
-- **Одно** сообщение в стиле персонажа («фишки на сегодня кончились», и т.п.),
-  потом — тишина до следующих суток (флаг фиксируется отдельно в Redis).
-
-### Как включить
-
-1. Получить API-ключ у провайдера:
-   - OpenAI: <https://platform.openai.com/api-keys>
-   - Anthropic: <https://console.anthropic.com/>
-   - OpenRouter (один ключ на многих провайдеров): <https://openrouter.ai/>
-2. Добавить в Vercel env (Production) как минимум `LLM_API_KEY`. Остальное
-   при необходимости:
-   ```bash
-   vercel env add LLM_API_KEY production
-   vercel env add LLM_PROVIDER production   # openai | anthropic | openrouter
-   vercel env add LLM_MODEL production      # например gpt-4o-mini
-   ```
-3. `vercel --prod` → `/api/setup?key=…` → проверка `/api/health`
-   (`llm_enabled: true`).
-
-Если `LLM_API_KEY` **не задан** — хендлер просто не регистрируется, бот
-работает только как модератор реакций (как раньше).
-
-### Оценка стоимости
-
-При ~50 «рандомных» вставках/день и разумном объёме триггеров: порядок
-**$1–2 / мес** для `gpt-4o-mini`, выше для Anthropic Haiku. Реальный расход
-зависит от активности чата и длины ответов — смотри панель провайдера.
-
-### Откат
-
-Удалить `LLM_API_KEY` из прод-env и сделать redeploy — LLM-режим
-выключится, остальное поведение бота не изменится.
+1. Fork the repository
+2. Create a branch (`git checkout -b feature/my-change`)
+3. Run `npm run typecheck`
+4. Open a PR with a clear description
 
 ---
 
-## Безопасность
+## License
 
-- Все секреты — только в `vercel env`, никогда не коммитить.
-- Если токен бота попал в публичное место (чат с агентом, скрин и т.п.) —
-  обязательно сделать `/revoke` у @BotFather и обновить `TELEGRAM_BOT_TOKEN`.
-- Endpoint `/api/setup` защищён параметром `?key=`, который должен совпадать с
-  `TELEGRAM_WEBHOOK_SECRET`. Без правильного ключа возвращает 403.
-- Telegram при каждом запросе на webhook присылает заголовок
-  `X-Telegram-Bot-Api-Secret-Token` со значением `TELEGRAM_WEBHOOK_SECRET`.
-  grammy его проверяет автоматически — посторонние запросы будут отброшены.
+[MIT](LICENSE) — Copyright (c) 2026 FiraYuld
 
 ---
 
-## Возможные ошибки
+## Acknowledgments
 
-| Симптом | Причина | Решение |
-|---|---|---|
-| `setMyCommands: chat not found` или похожие 400 на старте | Неверный `CHANNEL_ID`/`CHAT_ID` | Проверить, что ID числовой и со знаком минус (`-100...`) |
-| Бот не банит, в логах `Bad Request: not enough rights` | Не выданы права админа на бан | Проверить через `/status`, переоткрыть права в чате/канале |
-| `getChatMember: user not found` | Юзер вообще не известен Telegram (редкое) | Считается «не подписан», бан срабатывает |
-| Реакции не приходят в webhook | `allowed_updates` не содержит `message_reaction` | Дёрнуть `/api/setup` ещё раз, проверить `?action=info` |
-| Кнопки в чате модерации не реагируют | Webhook без `callback_query` | Снова открыть `/api/setup?key=...`, в `info` должен быть `callback_query` |
-| Автобан по 2-й реакции не срабатывает | Нет Redis или неверные ключи Upstash | Проверить `UPSTASH_*` и `/api/health` |
-| Бот не может писать в личку | Юзер ни разу не написал боту `/start` | Написать боту `/start` со своего аккаунта |
-
----
-
-## Структура
-
-```
-avanturin-bot/
-├── api/
-│   ├── telegram.ts       # webhook endpoint
-│   ├── setup.ts          # установка/удаление/инфо webhook
-│   └── health.ts         # проверка env + bot_env + llm_enabled
-├── src/
-│   ├── bot.ts            # инстанс grammY, регистрация хендлеров
-│   ├── config.ts         # парсинг env (ядро + LLM-блок)
-│   ├── logger.ts         # логи (баны → модерация, ошибки → владелец)
-│   ├── moderation.ts     # бан, проверка подписки, риск-скоринг
-│   ├── moderation-card.ts
-│   ├── post-ban.ts       # бан + ответ в чате обсуждения
-│   ├── reaction-mod-session.ts  # Redis-сессии модерации реакций
-│   ├── middleware/
-│   │   └── scope.ts      # фильтр апдейтов по чатам/типам
-│   ├── handlers/
-│   │   ├── reaction.ts   # message_reaction
-│   │   ├── moderation-callbacks.ts  # inline-кнопки
-│   │   └── commands.ts   # /start /help /ping /status /unban
-│   └── chat/             # LLM-режим «Авантюрин общается в чате»
-│       ├── persona.ts        # системный промпт + фразы о лимите
-│       ├── llm.ts            # клиент LLM (OpenAI/Anthropic/OpenRouter)
-│       ├── limits.ts         # суточные лимиты в Redis
-│       ├── limit-notice.ts   # одноразовое сообщение о лимите
-│       ├── context.ts        # буфер последних сообщений чата
-│       └── handler.ts        # bot.on('message:text') с триггерами
-├── .env.example
-├── package.json
-├── tsconfig.json
-├── vercel.json
-└── README.md
-```
-# aventurine_bot
-# aventurine_bot
+Built for communities running **channel + discussion group** setups on Telegram. Uses [grammY](https://grammy.dev/) and targets current Bot API features including reaction updates and bulk reaction removal for banned users.
