@@ -1,5 +1,5 @@
 import type { Context, NextFunction } from "grammy";
-import { config, isLlmPrivateDmUser } from "../config.js";
+import { config, isLlmPrivateDmUser, isOwnerUserId } from "../config.js";
 
 /**
  * Личка владельца, чат обсуждения (CHAT_ID), чат модерации (MODERATION_CHAT_ID),
@@ -33,6 +33,17 @@ export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise
         messageKeys: msg && typeof msg === "object" ? Object.keys(msg) : [],
       });
       await ctx.answerCallbackQuery({ text: "Нет данных чата" }).catch(() => {});
+      return;
+    }
+
+    const data = cq.data;
+    const from = ctx.from;
+    const chat = msg && "chat" in msg ? msg.chat : undefined;
+    if (data?.startsWith("post:")) {
+      if (chat?.type === "private" && from && isOwnerUserId(from.id)) {
+        return next();
+      }
+      await ctx.answerCallbackQuery().catch(() => {});
       return;
     }
 
