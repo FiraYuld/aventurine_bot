@@ -168,6 +168,7 @@ vercel link
 vercel env add TELEGRAM_BOT_TOKEN production
 vercel env add TELEGRAM_WEBHOOK_SECRET production
 vercel env add CHANNEL_ID production
+vercel env add SECONDARY_CHANNEL_ID production   # опционально: второй канал для /post
 vercel env add CHAT_ID production
 vercel env add ADMIN_LOG_CHAT_ID production
 vercel env add MODERATION_CHAT_ID production
@@ -219,19 +220,19 @@ https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 - `/start`, `/help`, `/ping`, `/status` — только пользователь с ID = `ADMIN_LOG_CHAT_ID`.
 - `/limits [@username]`, `/limits_reset`, `/limits_reset_all` — только владелец: LLM-лимиты.
 - `/clear_react_leave <user_id>`, `/ignore_channel*`, `/ignore_channel_list` — только владелец.
-- `/post` — только владелец, **только в личке**: мастер публикации фото-поста с URL-кнопками в `CHANNEL_ID`.
+- `/post` — только владелец, **только в личке**: мастер публикации фото-поста с URL-кнопками в выбранный канал (`CHANNEL_ID` / `SECONDARY_CHANNEL_ID`).
 - `/cancel` — только владелец, **только в личке**: отменить активный черновик публикации.
 - `/unban <user_id>` — владелец или администраторы канала и чата обсуждения.
 
 ### Публикация постов с inline-кнопками (`/post`)
 
-Доступна только владельцу (`ADMIN_LOG_CHAT_ID`) в **личном чате** с ботом. Бот должен быть администратором канала `CHANNEL_ID` с правом **публиковать сообщения**.
+Доступна только владельцу (`ADMIN_LOG_CHAT_ID`) в **личном чате** с ботом. Бот должен быть администратором каналов `CHANNEL_ID` и (если задан) `SECONDARY_CHANNEL_ID` с правом **публиковать сообщения**.
 
-1. `/post` — бот показывает привязанный канал для подтверждения.
+1. `/post` — бот показывает кнопки выбора канала (основной и опционально второй).
 2. Одно **фото с непустой подписью** (альбомы и посты без картинки не поддерживаются).
 3. Текст кнопки и URL (`http` или `https`); можно добавить несколько кнопок — каждая на отдельной строке.
 4. Превью: копия фото с подписью и URL-кнопками; под ним «Опубликовать» / «Отмена».
-5. «Опубликовать» копирует пост в `CHANNEL_ID`; «Отмена» или `/cancel` удаляет черновик.
+5. «Опубликовать» копирует пост в выбранный канал; «Отмена» или `/cancel` удаляет черновик.
 
 Повторный `/post` сбрасывает незавершённый черновик. Черновик живёт 24 часа с последнего шага.
 

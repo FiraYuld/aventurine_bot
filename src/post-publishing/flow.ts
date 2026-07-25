@@ -38,22 +38,35 @@ function isAuthorized(input: ActorInput, ownerId: number): boolean {
   return input.userId === ownerId && input.chatType === "private" && input.chatId === ownerId;
 }
 
+function parseChannelCallback(data: string): number | null {
+  const prefix = "post:channel:";
+  if (!data.startsWith(prefix)) return null;
+  const raw = data.slice(prefix.length);
+  const id = Number(raw);
+  if (!Number.isFinite(id) || !Number.isInteger(id) || String(id) !== raw) return null;
+  return id;
+}
+
 export class PostPublishingFlow {
   constructor(
     private readonly deps: {
       ownerId: number;
-      channelId: number;
+      channelIds: readonly number[];
       store: PostDraftStore;
       api: PostPublishingApi;
     },
-  ) {}
+  ) {
+    if (deps.channelIds.length === 0) {
+      throw new Error("PostPublishingFlow requires at least one channelId");
+    }
+  }
 
   private get ownerId(): number {
     return this.deps.ownerId;
   }
 
-  private get channelId(): number {
-    return this.deps.channelId;
+  private get channelIds(): readonly number[] {
+    return this.deps.channelIds;
   }
 
   private get store(): PostDraftStore {
@@ -64,15 +77,28 @@ export class PostPublishingFlow {
     return this.deps.api;
   }
 
+  private isAllowedChannel(channelId: number): boolean {
+    return this.channelIds.includes(channelId);
+  }
+
   async start(input: ActorInput): Promise<void> {
     if (!isAuthorized(input, this.ownerId)) return;
 
     await this.store.delete(this.ownerId);
 
-    let channelTitle: string;
-    try {
-      channelTitle = await this.api.getChannelTitle(this.channelId);
-    } catch {
+    const channels: { id: number; title: string }[] = [];
+    for (const channelId of this.channelIds) {
+      try {
+        channels.push({
+          id: channelId,
+          title: await this.api.getChannelTitle(channelId),
+        });
+      } catch {
+        // skip unavailable channel; fail below if none remain
+      }
+    }
+
+    if (channels.length === 0) {
       await this.api.sendText(
         this.ownerId,
         "Не удалось получить данные канала. Попробуйте позже.",
@@ -82,12 +108,16 @@ export class PostPublishingFlow {
 
     const draft: PostDraft = {
       step: "select_channel",
-      channelId: this.channelId,
+      channelId: channels[0]!.id,
       buttons: [],
     };
     await this.store.set(this.ownerId, draft);
 
-    const keyboard = new InlineKeyboard().text(channelTitle, "post:channel");
+    const keyboard = new InlineKeyboard();
+    for (const channel of channels) {
+      keyboard.text(channel.title, `post:channel:${channel.id}`).row();
+    }
+    keyboard.inline_keyboard.pop();
     await this.api.sendText(this.ownerId, "Выберите канал для публикации:", {
       replyMarkup: keyboard,
     });
@@ -183,13 +213,20 @@ export class PostPublishingFlow {
       return false;
     }
 
-    switch (input.data) {
-      case "post:channel":
-        if (draft.step !== "select_channel") return false;
-        await this.store.set(this.ownerId, { ...draft, step: "await_post" });
-        await this.api.sendText(this.ownerId, "Пришлите одно фото с непустой подписью.");
-        return true;
+    const selectedChannelId = parseChannelCallback(input.data);
+    if (selectedChannelId !== null) {
+      if (draft.step !== "select_channel") return false;
+      if (!this.isAllowedChannel(selectedChannelId)) return false;
+      await this.store.set(this.ownerId, {
+        ...draft,
+        step: "await_post",
+        channelId: selectedChannelId,
+      });
+      await this.api.sendText(this.ownerId, "Пришлите одно фото с непустой подписью.");
+      return true;
+    }
 
+    switch (input.data) {
       case "post:add":
         if (draft.step !== "choose_next") return false;
         await this.store.set(this.ownerId, { ...draft, step: "await_button_text" });

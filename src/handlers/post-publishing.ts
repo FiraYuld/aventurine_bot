@@ -59,9 +59,13 @@ function createApi(bot: Bot): PostPublishingApi {
 
 export function registerPostPublishing(bot: Bot): void {
   const store = new RedisPostDraftStore();
+  const channelIds = [
+    config.channelId,
+    ...(config.secondaryChannelId !== undefined ? [config.secondaryChannelId] : []),
+  ];
   const flow = new PostPublishingFlow({
     ownerId: config.adminLogChatId,
-    channelId: config.channelId,
+    channelIds,
     store,
     api: createApi(bot),
   });

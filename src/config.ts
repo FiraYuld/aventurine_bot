@@ -34,6 +34,16 @@ function optionalInt(name: string, defaultValue: number): number {
   return num;
 }
 
+function optionalIntValue(name: string): number | undefined {
+  const raw = optional(name);
+  if (raw === undefined) return undefined;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || !Number.isInteger(num)) {
+    throw new Error(`Переменная ${name} должна быть целым числом, получено: ${raw}`);
+  }
+  return num;
+}
+
 function optionalFloat(name: string, defaultValue: number): number {
   const raw = optional(name);
   if (raw === undefined) return defaultValue;
@@ -97,6 +107,11 @@ function loadConfig() {
     botToken: required("TELEGRAM_BOT_TOKEN"),
     webhookSecret: required("TELEGRAM_WEBHOOK_SECRET"),
     channelId: requiredInt("CHANNEL_ID"),
+    /**
+     * Второй канал для мастера `/post` (кнопка выбора рядом с CHANNEL_ID).
+     * Модерация реакций по-прежнему использует только CHANNEL_ID.
+     */
+    secondaryChannelId: optionalIntValue("SECONDARY_CHANNEL_ID"),
     chatId: requiredInt("CHAT_ID"),
     adminLogChatId: requiredInt("ADMIN_LOG_CHAT_ID"),
     moderationChatId: requiredInt("MODERATION_CHAT_ID"),

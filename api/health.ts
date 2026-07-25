@@ -11,6 +11,7 @@ const KEYS = [
 
 const OPTIONAL_KEYS = [
   "BOT_ENV",
+  "SECONDARY_CHANNEL_ID",
   "LLM_API_KEY",
   "LLM_PROVIDER",
   "LLM_MODEL",

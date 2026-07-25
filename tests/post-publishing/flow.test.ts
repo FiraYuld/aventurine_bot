@@ -12,6 +12,8 @@ import {
 
 const OWNER = 1001;
 const CHANNEL = -100200;
+const CHANNEL_B = -1003677551589;
+const channelCallback = (channelId = CHANNEL) => `post:channel:${channelId}`;
 
 class FakeStore implements PostDraftStore {
   current: PostDraft | null = null;
@@ -46,13 +48,16 @@ class FakeApi implements PostPublishingApi {
   sent: SentMessage[] = [];
   copyCalls: CopyCall[] = [];
   answeredCallbacks: string[] = [];
-  channelTitle = "Тестовый канал";
+  channelTitles = new Map<number, string>([
+    [CHANNEL, "Сонный Уголок"],
+    [CHANNEL_B, "Подвал Неомраченных"],
+  ]);
   channelTitleError: Error | null = null;
   copyPostError: Error | null = null;
 
-  async getChannelTitle(_channelId: number): Promise<string> {
+  async getChannelTitle(channelId: number): Promise<string> {
     if (this.channelTitleError) throw this.channelTitleError;
-    return this.channelTitle;
+    return this.channelTitles.get(channelId) ?? `Канал ${channelId}`;
   }
 
   async sendText(chatId: number, text: string, options?: { replyMarkup?: unknown }): Promise<void> {
@@ -83,20 +88,33 @@ function ownerMessage(overrides: Partial<MessageInput> = {}): MessageInput {
 }
 
 function ownerCallback(overrides: Partial<CallbackInput> = {}): CallbackInput {
-  return { ...ownerInput(), data: "post:channel", callbackQueryId: "cb-1", ...overrides };
+  return {
+    ...ownerInput(),
+    data: channelCallback(),
+    callbackQueryId: "cb-1",
+    ...overrides,
+  };
 }
 
-function createFlow(store = new FakeStore(), api = new FakeApi()) {
+function createFlow(
+  store = new FakeStore(),
+  api = new FakeApi(),
+  channelIds: readonly number[] = [CHANNEL],
+) {
   return {
-    flow: new PostPublishingFlow({ ownerId: OWNER, channelId: CHANNEL, store, api }),
+    flow: new PostPublishingFlow({ ownerId: OWNER, channelIds, store, api }),
     store,
     api,
   };
 }
 
-async function advanceToChooseNext(store: FakeStore, flow: PostPublishingFlow) {
+async function advanceToChooseNext(
+  store: FakeStore,
+  flow: PostPublishingFlow,
+  channelId = CHANNEL,
+) {
   await flow.start(ownerInput());
-  await flow.handleCallback(ownerCallback({ data: "post:channel" }));
+  await flow.handleCallback(ownerCallback({ data: channelCallback(channelId) }));
   await flow.handleMessage(
     ownerMessage({ messageId: 10, photo: true, caption: "Подпись" }),
   );
@@ -114,8 +132,9 @@ test("happy path advances through the publishing state machine", async () => {
   assert.equal(store.current?.step, "select_channel");
   assert.match(api.sent.at(-1)!.text, /Выберите канал/);
 
-  await flow.handleCallback(ownerCallback({ data: "post:channel" }));
+  await flow.handleCallback(ownerCallback({ data: channelCallback() }));
   assert.equal(store.current?.step, "await_post");
+  assert.equal(store.current?.channelId, CHANNEL);
 
   await flow.handleMessage(
     ownerMessage({ messageId: 10, photo: true, caption: "Подпись" }),
@@ -130,6 +149,31 @@ test("happy path advances through the publishing state machine", async () => {
   );
   assert.equal(store.current?.step, "choose_next");
   assert.deepEqual(store.current?.buttons, [{ text: "Сайт", url: "https://example.com" }]);
+});
+
+test("offers both channels and publishes to the selected secondary channel", async () => {
+  const { flow, store, api } = createFlow(new FakeStore(), new FakeApi(), [CHANNEL, CHANNEL_B]);
+
+  await flow.start(ownerInput());
+  assert.equal(store.current?.step, "select_channel");
+  const keyboard = api.sent.at(-1)!.replyMarkup as {
+    inline_keyboard: { text: string; callback_data: string }[][];
+  };
+  assert.deepEqual(
+    keyboard.inline_keyboard.map((row) => row.map((btn) => [btn.text, btn.callback_data])),
+    [
+      [["Сонный Уголок", channelCallback(CHANNEL)]],
+      [["Подвал Неомраченных", channelCallback(CHANNEL_B)]],
+    ],
+  );
+
+  await advanceToChooseNext(store, flow, CHANNEL_B);
+  assert.equal(store.current?.channelId, CHANNEL_B);
+  await flow.handleCallback(ownerCallback({ data: "post:done" }));
+  await flow.handleCallback(ownerCallback({ data: "post:publish", callbackQueryId: "cb-pub" }));
+
+  assert.equal(store.current, null);
+  assert.equal(api.copyCalls.at(-1)!.toChatId, CHANNEL_B);
 });
 
 test("ignores foreign users and group chats", async () => {
@@ -155,7 +199,7 @@ test("ignores foreign users and group chats", async () => {
     userId: 999,
     chatId: -100500,
     chatType: "supergroup",
-    data: "post:channel",
+    data: channelCallback(),
     callbackQueryId: "cb-x",
   });
   assert.equal(store.current?.step, "select_channel");
@@ -166,7 +210,7 @@ test("rejects photo without caption and keeps await_post", async () => {
   const { flow, store } = createFlow();
 
   await flow.start(ownerInput());
-  await flow.handleCallback(ownerCallback({ data: "post:channel" }));
+  await flow.handleCallback(ownerCallback({ data: channelCallback() }));
 
   const consumed = await flow.handleMessage(
     ownerMessage({ messageId: 10, photo: true, caption: "" }),
@@ -180,7 +224,7 @@ test("rejects invalid URL and keeps await_button_url", async () => {
   const { flow, store } = createFlow();
 
   await flow.start(ownerInput());
-  await flow.handleCallback(ownerCallback({ data: "post:channel" }));
+  await flow.handleCallback(ownerCallback({ data: channelCallback() }));
   await flow.handleMessage(
     ownerMessage({ messageId: 10, photo: true, caption: "Подпись" }),
   );
@@ -273,7 +317,7 @@ test("repeat start replaces an unfinished draft", async () => {
   const { flow, store } = createFlow();
 
   await flow.start(ownerInput());
-  await flow.handleCallback(ownerCallback({ data: "post:channel" }));
+  await flow.handleCallback(ownerCallback({ data: channelCallback() }));
   await flow.start(ownerInput());
 
   assert.equal(store.current?.step, "select_channel");
