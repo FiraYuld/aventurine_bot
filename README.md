@@ -125,7 +125,21 @@ Then open `https://<your-domain>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>` once. 
 | `/limits_reset`, `/limits_reset_all` | Owner | Reset LLM quotas |
 | `/clear_react_leave <user_id>` | Owner | Clear “Keep” immunity |
 | `/ignore_channel`, `/ignore_channel_remove`, `/ignore_channel_list` | Owner | Channel reaction allowlist |
+| `/post` | Owner (private DM only) | Photo post wizard with URL buttons → `CHANNEL_ID` |
+| `/cancel` | Owner (private DM only) | Cancel an active post draft |
 | `/unban <user_id>` | Owner or channel/discussion admins | Unban in discussion + channel |
+
+### Inline post publishing (`/post`)
+
+Available only to the owner (`ADMIN_LOG_CHAT_ID`) in a **private chat** with the bot. The bot must be a channel admin with permission to **post messages** in `CHANNEL_ID`.
+
+1. Send `/post` — bot shows the configured channel for confirmation.
+2. Send **one photo with a non-empty caption** (albums and text-only posts are not supported).
+3. Enter button label and URL (`http` or `https`) — repeat for more buttons, or finish.
+4. Review the preview (photo + caption + inline URL buttons, one button per row).
+5. Tap **Publish** to copy the post into `CHANNEL_ID`, or **Cancel** to discard the draft.
+
+`/cancel` aborts the wizard at any step. A new `/post` replaces an unfinished draft. Drafts expire after 24 hours of inactivity.
 
 ---
 
