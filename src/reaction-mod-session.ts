@@ -1,5 +1,11 @@
 import { Redis } from "@upstash/redis";
 import { getConfig } from "./config.js";
+import { withLock, type LockRedis } from "./user-lock.js";
+
+/** Serialises reaction handling for one user (see user-lock.ts). */
+export async function withReactionUserLock<T>(userId: number, fn: () => Promise<T>): Promise<T> {
+  return withLock(getRedis() as unknown as LockRedis, `reactlock:${userId}`, fn);
+}
 
 export interface ReactionModEvent {
   messageId: number;

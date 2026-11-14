@@ -20,6 +20,7 @@ import {
   deleteReactionModSession,
   getReactionModSession,
   isReactionLeaveAlone,
+  withReactionUserLock,
   setReactionModSession,
 } from "../reaction-mod-session.js";
 
@@ -124,137 +125,140 @@ export function registerReactionHandler(bot: Bot): void {
       return;
     }
 
-    try {
-      if (await isAdminAnywhere(ctx.api, user.id)) return;
+    // One user at a time: parallel webhook deliveries must not race on the session.
+    await withReactionUserLock(user.id, async () => {
+      try {
+        if (await isAdminAnywhere(ctx.api, user.id)) return;
 
-      const risk = await computeRisk(ctx.api, user);
-      if (!risk.shouldBan) return;
+        const risk = await computeRisk(ctx.api, user);
+        if (!risk.shouldBan) return;
 
-      if (await isReactionLeaveAlone(user.id)) {
-        return;
-      }
+        if (await isReactionLeaveAlone(user.id)) {
+          return;
+        }
 
-      // Спам-маркер в нике («НЕ НАЖИМАЙ СЮДА!» и тп) — характерная приманка
-      // спам-ботов. Не ждём второго страйка, валим сразу после первой реакции.
-      if (hasSpamNickname(user)) {
-        const reasons = [...risk.reasons, "спам-маркер в нике"];
-        const existing = await getReactionModSession(user.id);
-        await executeReactionBan({
-          api: ctx.api,
-          user,
-          userId: user.id,
-          reasons,
-          discussionMessageId: message_id,
-          logTitle: "Автобан (спам-ник)",
-          reactionEvents: [
-            ...(existing?.reactionEvents ?? []),
-            { messageId: message_id, emojis: reactionEmojis(new_reaction) },
-          ],
-          replaceModerationMessageId: existing?.moderationMessageId,
-        });
-        await deleteReactionModSession(user.id);
-        return;
-      }
+        // Спам-маркер в нике («НЕ НАЖИМАЙ СЮДА!» и тп) — характерная приманка
+        // спам-ботов. Не ждём второго страйка, валим сразу после первой реакции.
+        if (hasSpamNickname(user)) {
+          const reasons = [...risk.reasons, "спам-маркер в нике"];
+          const existing = await getReactionModSession(user.id);
+          await executeReactionBan({
+            api: ctx.api,
+            user,
+            userId: user.id,
+            reasons,
+            discussionMessageId: message_id,
+            logTitle: "Автобан (спам-ник)",
+            reactionEvents: [
+              ...(existing?.reactionEvents ?? []),
+              { messageId: message_id, emojis: reactionEmojis(new_reaction) },
+            ],
+            replaceModerationMessageId: existing?.moderationMessageId,
+          });
+          await deleteReactionModSession(user.id);
+          return;
+        }
 
-      const now = Date.now();
-      const windowMs = config.reactionAutoBanWindowMs;
-      const windowSec = Math.round(windowMs / 1000);
-      const ttlSec = config.reactionModSessionTtlSec;
-      const cap = config.reactionAutoBanStrikes;
+        const now = Date.now();
+        const windowMs = config.reactionAutoBanWindowMs;
+        const windowSec = Math.round(windowMs / 1000);
+        const ttlSec = config.reactionModSessionTtlSec;
+        const cap = config.reactionAutoBanStrikes;
 
-      let session = await getReactionModSession(user.id);
-      if (session && now - session.firstAt > windowMs) {
-        await deleteReactionModSession(user.id);
-        session = null;
-      }
+        let session = await getReactionModSession(user.id);
+        if (session && now - session.firstAt > windowMs) {
+          await deleteReactionModSession(user.id);
+          session = null;
+        }
 
-      const thisEvent = { messageId: message_id, emojis: reactionEmojis(new_reaction) };
+        const thisEvent = { messageId: message_id, emojis: reactionEmojis(new_reaction) };
 
-      if (!session) {
-        const text = buildPendingModerationText(user, risk.reasons, 1, windowSec, cap);
-        const keyboard = pendingModerationKeyboard(user.id, message_id);
-        const sent = await ctx.api.sendMessage(config.moderationChatId, text, {
-          parse_mode: "HTML",
-          link_preview_options: { is_disabled: true },
-          reply_markup: keyboard,
-        });
+        if (!session) {
+          const text = buildPendingModerationText(user, risk.reasons, 1, windowSec, cap);
+          const keyboard = pendingModerationKeyboard(user.id, message_id);
+          const sent = await ctx.api.sendMessage(config.moderationChatId, text, {
+            parse_mode: "HTML",
+            link_preview_options: { is_disabled: true },
+            reply_markup: keyboard,
+          });
 
-        // Публичный варн в основном чате — пинг + счётчик.
-        const warningChatMessageId = await sendPublicWarning(ctx.api, {
-          user,
-          strikeCount: 1,
-          cap,
-        });
+          // Публичный варн в основном чате — пинг + счётчик.
+          const warningChatMessageId = await sendPublicWarning(ctx.api, {
+            user,
+            strikeCount: 1,
+            cap,
+          });
 
-        await setReactionModSession(user.id, {
-          moderationMessageId: sent.message_id,
-          warningChatMessageId,
-          strikeCount: 1,
-          firstAt: now,
-          lastDiscussionMessageId: message_id,
-          reasons: risk.reasons,
-          reactionEvents: [thisEvent],
-        }, ttlSec);
-        return;
-      }
+          await setReactionModSession(user.id, {
+            moderationMessageId: sent.message_id,
+            warningChatMessageId,
+            strikeCount: 1,
+            firstAt: now,
+            lastDiscussionMessageId: message_id,
+            reasons: risk.reasons,
+            reactionEvents: [thisEvent],
+          }, ttlSec);
+          return;
+        }
 
-      const strikeCount = session.strikeCount + 1;
-      const lastDiscussionMessageId = message_id;
-      const reactionEvents = [...(session.reactionEvents ?? []), thisEvent];
+        const strikeCount = session.strikeCount + 1;
+        const lastDiscussionMessageId = message_id;
+        const reactionEvents = [...(session.reactionEvents ?? []), thisEvent];
 
-      if (strikeCount >= cap && now - session.firstAt <= windowMs) {
-        // Сначала «закрываем» публичный варн в чате — морфим в «заблокирован».
+        if (strikeCount >= cap && now - session.firstAt <= windowMs) {
+          // Сначала «закрываем» публичный варн в чате — морфим в «заблокирован».
+          await editPublicWarning(ctx.api, session.warningChatMessageId, {
+            user,
+            strikeCount: cap,
+            cap,
+          });
+
+          await executeReactionBan({
+            api: ctx.api,
+            user,
+            userId: user.id,
+            reasons: session.reasons && session.reasons.length > 0 ? session.reasons : risk.reasons,
+            discussionMessageId: lastDiscussionMessageId,
+            logTitle: "Автобан",
+            reactionEvents,
+            replaceModerationMessageId: session.moderationMessageId,
+          });
+          await deleteReactionModSession(user.id);
+          return;
+        }
+
+        const next = {
+          ...session,
+          strikeCount,
+          lastDiscussionMessageId,
+          reactionEvents,
+        };
+        await setReactionModSession(user.id, next, ttlSec);
+
+        const editText = buildPendingModerationText(user, risk.reasons, strikeCount, windowSec, cap);
+        const editKb = pendingModerationKeyboard(user.id, lastDiscussionMessageId);
+        await ctx.api.editMessageText(
+          config.moderationChatId,
+          session.moderationMessageId,
+          editText,
+          {
+            parse_mode: "HTML",
+            link_preview_options: { is_disabled: true },
+            reply_markup: editKb,
+          },
+        );
+
+        // И обновляем счётчик в публичном варне (1/3 → 2/3).
         await editPublicWarning(ctx.api, session.warningChatMessageId, {
           user,
-          strikeCount: cap,
+          strikeCount,
           cap,
         });
-
-        await executeReactionBan({
-          api: ctx.api,
-          user,
-          userId: user.id,
-          reasons: session.reasons && session.reasons.length > 0 ? session.reasons : risk.reasons,
-          discussionMessageId: lastDiscussionMessageId,
-          logTitle: "Автобан",
-          reactionEvents,
-          replaceModerationMessageId: session.moderationMessageId,
-        });
-        await deleteReactionModSession(user.id);
-        return;
+      } catch (err) {
+        console.error("reaction handler failed:", err);
+        await logError(ctx.api, `обработка реакции от ${user.id}`, err);
       }
-
-      const next = {
-        ...session,
-        strikeCount,
-        lastDiscussionMessageId,
-        reactionEvents,
-      };
-      await setReactionModSession(user.id, next, ttlSec);
-
-      const editText = buildPendingModerationText(user, risk.reasons, strikeCount, windowSec, cap);
-      const editKb = pendingModerationKeyboard(user.id, lastDiscussionMessageId);
-      await ctx.api.editMessageText(
-        config.moderationChatId,
-        session.moderationMessageId,
-        editText,
-        {
-          parse_mode: "HTML",
-          link_preview_options: { is_disabled: true },
-          reply_markup: editKb,
-        },
-      );
-
-      // И обновляем счётчик в публичном варне (1/3 → 2/3).
-      await editPublicWarning(ctx.api, session.warningChatMessageId, {
-        user,
-        strikeCount,
-        cap,
-      });
-    } catch (err) {
-      console.error("reaction handler failed:", err);
-      await logError(ctx.api, `обработка реакции от ${user.id}`, err);
-    }
+    });
   });
 }
 

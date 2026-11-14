@@ -35,6 +35,18 @@ export class LlmError extends Error {
   }
 }
 
+/**
+ * The whole webhook must finish within the Vercel budget (maxDuration 10 s, grammY
+ * webhook timeout 9 s). If it doesn't, grammY throws, /api/telegram answers 500 and
+ * Telegram redelivers the update: duplicate replies and a double-spent quota. So the LLM
+ * request is capped well below that, whatever LLM_TIMEOUT_MS says.
+ */
+export const LLM_TIMEOUT_CAP_MS = 6_000;
+
+export function effectiveLlmTimeoutMs(requestedMs: number): number {
+  return Math.max(1, Math.min(requestedMs, LLM_TIMEOUT_CAP_MS));
+}
+
 let cached: LlmClient | undefined;
 
 export function getLlmClient(): LlmClient | null {
@@ -111,7 +123,7 @@ class OpenAiCompatibleClient implements LlmClient {
 
   async chat(input: LlmChatInput): Promise<LlmChatOutput> {
     const c = getConfig();
-    const timeoutMs = input.timeoutMs ?? c.llmTimeoutMs;
+    const timeoutMs = effectiveLlmTimeoutMs(input.timeoutMs ?? c.llmTimeoutMs);
     const maxTokens = input.maxTokens ?? c.llmMaxOutputTokens;
 
     const body = {
@@ -169,7 +181,7 @@ class AnthropicClient implements LlmClient {
 
   async chat(input: LlmChatInput): Promise<LlmChatOutput> {
     const c = getConfig();
-    const timeoutMs = input.timeoutMs ?? c.llmTimeoutMs;
+    const timeoutMs = effectiveLlmTimeoutMs(input.timeoutMs ?? c.llmTimeoutMs);
     const maxTokens = input.maxTokens ?? c.llmMaxOutputTokens;
 
     const body = {
