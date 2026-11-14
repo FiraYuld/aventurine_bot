@@ -1,11 +1,11 @@
 # Aventurine Bot
 
-**Open-source Telegram bot for moderating reactions in a channel-linked discussion group** — built for communities that want to keep reactions enabled while fighting spam bots and drive-by reactors who are not subscribed to the channel.
+**Open-source Telegram moderation bot for a channel with a linked discussion group** — keeps reactions and comments open while catching spam bots, drive-by reactors who are not subscribed to the channel, and spam accounts that join quietly and post later.
 
 Production stack: **Node.js 20+**, **TypeScript**, **[grammY](https://grammy.dev/)**, **Vercel** serverless webhooks, **Upstash Redis**.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue)](https://www.typescriptlang.org/)
 [![Telegram Bot API](https://img.shields.io/badge/Telegram-Bot%20API-26A5E4)](https://core.telegram.org/bots/api)
 
 > **Russian documentation:** [docs/README.ru.md](docs/README.ru.md) (full setup guide in Russian).
@@ -14,16 +14,14 @@ Production stack: **Node.js 20+**, **TypeScript**, **[grammY](https://grammy.dev
 
 ## Why this project exists
 
-Large Telegram channels often face **reaction spam**: bot accounts flood discussion posts with emoji reactions. Disabling reactions entirely hurts legitimate subscribers. This bot offers a middle path:
+Large Telegram channels face two kinds of spam in their discussion group:
 
-- Monitor `message_reaction` updates in the linked discussion supergroup
-- Flag users who react without being subscribed to the parent channel
-- Route decisions to a **moderator inbox** with inline **Ban** / **Keep** buttons
-- Auto-ban on repeated strikes within a time window
-- Instantly ban obvious bot accounts
-- After a ban, optionally **remove all reactions** from that user (Telegram Bot API 10.0 `deleteAllMessageReactions`)
+- **Reaction spam** — accounts flood posts with emoji reactions without being subscribed. Disabling reactions hurts real subscribers.
+- **Sleeper accounts** — accounts join the channel *and* the chat, wait, then start commenting. Their profiles usually carry a linked personal channel (often 18+).
 
-The optional **LLM persona mode** lets the bot reply in-character in the discussion chat (multi-provider: OpenAI, Anthropic, OpenRouter), with per-user daily quotas stored in Redis.
+The bot gives moderators a middle path: it watches, scores, and brings decisions to a **moderation chat** with inline buttons. Irreversible actions (deleting someone's messages) always need an explicit tap.
+
+The optional **LLM persona mode** lets the bot reply in character in the discussion chat (OpenAI, Anthropic, OpenRouter), with per-user daily quotas in Redis. It is off when `LLM_API_KEY` is empty.
 
 ---
 
@@ -31,33 +29,43 @@ The optional **LLM persona mode** lets the bot reply in-character in the discuss
 
 | Area | Capability |
 |------|------------|
-| **Reaction moderation** | Risk scoring (channel membership, username heuristics, spam nickname patterns) |
-| **Human-in-the-loop** | Moderation cards with inline keyboards; stale cards still work after Redis session expiry |
-| **Auto-ban** | Configurable strike window (default 3 reactions / 60s) via Redis sessions |
-| **Bot accounts** | Immediate ban on bot reactions |
-| **Anonymous reactions** | Detect `actor_chat` reactions; ban linked chats except allowlisted channels |
-| **Post-ban cleanup** | `deleteAllMessageReactions` after successful chat ban (API 10.0) |
-| **Channel allowlist** | Ignore reactions from trusted channels (`/ignore_channel`) |
-| **LLM chat mode** | Optional addressed + random replies; Redis rate limits; owner DM without caps |
-| **Ops** | Webhook setup endpoint, health check, staging via `BOT_ENV` |
+| **Reaction moderation** | Risk scoring (channel membership, username heuristics, spam nickname patterns); subscribers cost a single API call |
+| **Human-in-the-loop** | Moderation cards with **Ban** / **Keep**; stale cards still work after the Redis session expired |
+| **Auto-ban** | 3 suspicious reactions within 60 s → ban (strike session in Redis, serialised per user with a Redis lock) |
+| **Channel reactions** | Reactions on behalf of a foreign channel → card with **Ban channel** (`banChatSenderChat` + remove its reactions) / **Keep** (adds to the ignore-list). Own channel, anonymous admins and ignore-listed channels are silent |
+| **Join log** | Every join to the chat or channel → silent entry in the moderation chat: profile link, ID, how they joined, bio, linked personal channel, keyword hints, **Ban** button |
+| **After any ban** | Ban by anyone (button, another bot, manual) → bot bans in both chat and channel and removes the "joined the group" message. Messages and reactions are deleted **only** after a separate **🧹** confirmation |
+| **Inline post buttons** | `/post` attaches URL buttons to a post you published yourself, so Premium custom emoji survive |
+| **LLM chat mode** | Optional addressed + random replies; Redis rate limits; request capped below the webhook budget |
+| **Ops** | Webhook setup endpoint, health check, `/status` rights report, staging via `BOT_ENV` |
 
-### Telegram API limitation (documented)
+### Telegram API limitations (documented)
 
-Reactions on **channel posts** are not attributed to individual users in the Bot API — only aggregate counts. This bot moderates the **linked discussion group** only. That is a platform constraint, not a bug.
+- Reactions on **channel posts** are not attributed to users in the Bot API — only counts. The bot moderates the **linked discussion group**.
+- Bots never receive reactions set by **other bots**, and cannot see other bots' messages in groups.
+- Bots can't send Premium custom emoji to channels without a Fragment username — hence the `/post` design below.
+- Messages can be deleted only within **48 h**, so old "joined the group" messages stay.
 
 ---
 
 ## Architecture
 
 ```text
-Telegram webhook → /api/telegram (grammY)
-  ├── scope middleware (discussion chat, moderation chat, owner DM)
-  ├── commands (/status, /unban, ignore-list, LLM limits, …)
-  ├── message_reaction → risk → ban | moderation card | auto-ban
-  ├── callback_query → Ban / Keep (fresh + stale paths)
+Telegram webhook → /api/telegram (grammY, 9 s budget)
+  ├── scope middleware (discussion chat, moderation chat, owner DM, chat_member of chat/channel)
+  ├── commands (/status, /unban, ignore-list, LLM limits, /post, …)
+  ├── /post wizard → editMessageReplyMarkup on the owner's channel post
+  ├── message_reaction
+  │     ├── user    → risk → card | auto-ban          (per-user Redis lock)
+  │     └── channel → card Ban channel / Keep
+  ├── chat_member
+  │     ├── join → join-log entry with 🔨
+  │     └── ban by someone else → ban in chat + channel, mark entry, offer 🧹
+  ├── callback_query → Ban / Keep, 🔨, 🧹, channel cards, /post buttons
   └── message:text → optional LLM persona (if LLM_API_KEY set)
 
-Redis (Upstash): reaction mod sessions, leave-alone immunity, LLM quotas
+Redis (Upstash): reaction sessions + locks, leave-alone immunity, ignore-list,
+join-log entries, join message ids, post drafts, LLM quotas and context
 ```
 
 ---
@@ -67,8 +75,12 @@ Redis (Upstash): reaction mod sessions, leave-alone immunity, LLM quotas
 ### Prerequisites
 
 1. Create a bot via [@BotFather](https://t.me/BotFather) — `/setprivacy` → **Disable**, `/setjoingroups` → **Enable**
-2. Add the bot as admin in: parent **channel** (ban users), **discussion supergroup** (ban + delete messages + send messages), **moderation supergroup** (send messages + inline buttons)
-3. [Upstash Redis](https://upstash.com/) REST credentials (required for strike sessions and auto-ban)
+2. Add the bot as admin:
+   - parent **channel** — ban users, **edit messages** (for `/post`), delete messages
+   - **discussion supergroup** — ban users, **delete messages**, send messages
+   - **moderation chat** — send messages
+   - optional **test channel** for `/post` — edit messages
+3. [Upstash Redis](https://upstash.com/) REST credentials
 4. Deploy to [Vercel](https://vercel.com/) or run locally with `vercel dev`
 
 ### Environment
@@ -82,10 +94,12 @@ Copy [`.env.example`](.env.example) to `.env` and fill in:
 | `CHANNEL_ID` | Parent channel ID (`-100…`) — moderation + `/post` |
 | `POST_TEST_CHANNEL_ID` | Optional test channel for `/post` |
 | `CHAT_ID` | Linked discussion supergroup ID |
-| `MODERATION_CHAT_ID` | Moderator supergroup for cards and ban logs |
+| `MODERATION_CHAT_ID` | Moderation chat for cards, join log and ban logs |
 | `ADMIN_LOG_CHAT_ID` | Owner user ID (private commands + error logs) |
 | `UPSTASH_REDIS_REST_URL` / `TOKEN` | Upstash REST API |
 | `LLM_API_KEY` | Optional — enables persona mode |
+
+> If your Vercel variables are marked *sensitive*, `vercel env pull` writes `[SENSITIVE]` placeholders instead of values; keep a real `.env` elsewhere.
 
 ### Local development
 
@@ -93,6 +107,7 @@ Copy [`.env.example`](.env.example) to `.env` and fill in:
 npm install
 cp .env.example .env   # edit values
 npm run typecheck
+npm test
 npm run local          # Vercel dev on :3000
 ```
 
@@ -106,6 +121,8 @@ Verify: `GET /api/health` → `bot_env`, `llm_enabled`, env presence flags.
 
 ### Production deploy
 
+With the Vercel GitHub integration, merging to `main` deploys production. Without it:
+
 ```bash
 vercel link
 vercel env add TELEGRAM_BOT_TOKEN production
@@ -113,7 +130,7 @@ vercel env add TELEGRAM_BOT_TOKEN production
 vercel --prod
 ```
 
-Then open `https://<your-domain>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>` once. Confirm `allowed_updates` includes `message_reaction` and `callback_query` (`?action=info`).
+Then open `https://<your-domain>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>` once. Confirm `allowed_updates` includes `message_reaction`, `callback_query` and `chat_member` (`?action=info`).
 
 ---
 
@@ -121,16 +138,31 @@ Then open `https://<your-domain>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>` once. 
 
 | Command | Who | Purpose |
 |---------|-----|---------|
-| `/start`, `/help`, `/ping`, `/status` | Owner | Health and setup checks |
+| `/start`, `/help`, `/ping` | Owner | Help and liveness |
+| `/status` | Owner | Bot rights per chat: ban, edit messages for `/post` |
 | `/limits [@user]` | Owner | LLM daily usage (chat + privileged DM counters) |
 | `/limits_reset`, `/limits_reset_all` | Owner | Reset LLM quotas |
 | `/clear_react_leave <user_id>` | Owner | Clear “Keep” immunity |
-| `/ignore_channel`, `/ignore_channel_remove`, `/ignore_channel_list` | Owner | Channel reaction allowlist |
+| `/ignore_channel`, `/ignore_channel_remove`, `/ignore_channel_list` | Owner | Channels allowed to react |
 | `/post` | Owner (private DM only) | Attach URL buttons to your own channel post |
 | `/cancel` | Owner (private DM only) | Cancel an active post draft |
 | `/unban <user_id>` | Owner or channel/discussion admins | Unban in discussion + channel |
 
-### Inline post publishing (`/post`)
+### Join log and bans
+
+For every join the moderation chat gets a silent entry: name linked to the profile, @username, ID, how they joined (invite link, request, folder), whether they are also in the other place, bio, linked personal channel (title, @username, description) and hints (18+, casino, crypto, dating). Nothing is banned automatically.
+
+When someone is banned in the chat or channel — via **🔨 Забанить**, another bot (e.g. Iris) or by hand — the bot:
+
+1. bans them in both the chat and the channel (reversible by `/unban`),
+2. deletes the "… joined the group" service message (if younger than 48 h),
+3. marks the entry “🔨 Забанен (who) … messages and reactions untouched” (or posts a small card) with **🧹 Удалить сообщения и реакции**.
+
+Only that **🧹** button deletes the user's messages (re-ban with `revoke_messages`) and reactions. A real person banned by mistake keeps their messages unless someone confirms.
+
+> The older reaction flow (auto-ban after 3 reactions, **Ban** on a reaction card) still deletes messages and reactions immediately — it targets spam bots.
+
+### Inline post buttons (`/post`)
 
 Available only to the owner (`ADMIN_LOG_CHAT_ID`) in a **private chat** with the bot. The bot must be a channel admin with permission to **edit messages** in `CHANNEL_ID` and, if set, `POST_TEST_CHANNEL_ID`.
 
@@ -149,12 +181,18 @@ Bots cannot send Premium custom emoji to channels unless they own a Fragment use
 ## Project structure
 
 ```text
-api/           Vercel serverless routes (telegram webhook, setup, health)
+api/                 Vercel routes: telegram webhook, setup, health
 src/
-  handlers/    reactions, moderation callbacks, commands
-  chat/        optional LLM persona, limits, context buffer
-  moderation.ts, post-ban.ts, reaction-mod-session.ts, …
-tools/chat-analysis/   offline chat export analysis (optional)
+  bot.ts             handler registration order (matters: see comments)
+  handlers/          reactions + channel cards, moderation callbacks, join log, commands, /post
+  post-publishing/   /post wizard state machine, drafts
+  chat/              optional LLM persona, limits, context buffer
+  ban-cleanup.ts     after-ban follow-up and the confirmed wipe
+  join-log.ts        join detection, log entry text, hints
+  user-lock.ts       per-user Redis lock
+  redis.ts           shared Upstash client
+tests/               node:test unit tests (fake Telegram / Redis)
+tools/chat-analysis/ offline chat export analysis (optional)
 ```
 
 ---
@@ -174,8 +212,10 @@ Issues and pull requests are welcome. Please do not commit tokens or chat IDs fr
 
 1. Fork the repository
 2. Create a branch (`git checkout -b feature/my-change`)
-3. Run `npm run typecheck`
+3. Run `npm run typecheck` and `npm test`
 4. Open a PR with a clear description
+
+Moderation code bans real people: test it with fakes (see `tests/`) or dry runs that intercept Telegram writes, not against live chats.
 
 ---
 
@@ -187,4 +227,4 @@ Issues and pull requests are welcome. Please do not commit tokens or chat IDs fr
 
 ## Acknowledgments
 
-Built for communities running **channel + discussion group** setups on Telegram. Uses [grammY](https://grammy.dev/) and targets current Bot API features including reaction updates and bulk reaction removal for banned users.
+Built for communities running **channel + discussion group** setups on Telegram. Uses [grammY](https://grammy.dev/) and current Bot API features: reaction updates, bulk reaction removal, sender-chat bans and personal channels in profiles.
