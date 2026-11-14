@@ -101,3 +101,21 @@ test("moderation callback allowed only from moderation chat", async () => {
   assert.equal(next.mock.callCount(), 1);
   assert.equal(rejected.answerCallbackQuery.mock.callCount(), 1);
 });
+
+test("chat_member updates pass only for the discussion chat and the channel", async () => {
+  const makeCtx = (chatId: number, type: "channel" | "supergroup") => {
+    const chat = { id: chatId, type, title: "x" };
+    const chatMember = { chat, from: { id: 5, is_bot: false, first_name: "U" } };
+    return { update: { update_id: 1, chat_member: chatMember }, chatMember, chat } as unknown as Context;
+  };
+
+  for (const [chatId, type, expected] of [
+    [config.channelId, "channel", 1],
+    [config.chatId, "supergroup", 1],
+    [-100999, "channel", 0],
+  ] as const) {
+    const next = mock.fn(async () => {});
+    await scopeMiddleware(makeCtx(chatId, type), next as NextFunction);
+    assert.equal(next.mock.callCount(), expected, String(chatId));
+  }
+});

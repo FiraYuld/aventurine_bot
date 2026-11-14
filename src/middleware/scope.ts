@@ -57,6 +57,13 @@ export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise
     return next();
   }
 
+  // Joins/leaves in the discussion chat and the channel (join log).
+  const cm = ctx.chatMember;
+  if (cm) {
+    if (cm.chat.id === config.chatId || cm.chat.id === config.channelId) return next();
+    return;
+  }
+
   const chat = ctx.chat;
   const from = ctx.from;
   if (!chat || !from) return;

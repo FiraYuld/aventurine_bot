@@ -4,6 +4,7 @@ import { registerReactionHandler } from "./handlers/reaction.js";
 import { registerModerationCallbacks } from "./handlers/moderation-callbacks.js";
 import { registerCommands } from "./handlers/commands.js";
 import { registerPostPublishing } from "./handlers/post-publishing.js";
+import { registerJoinLog } from "./handlers/join-log.js";
 import { registerChatHandler } from "./chat/handler.js";
 import { scopeMiddleware } from "./middleware/scope.js";
 
@@ -20,6 +21,7 @@ export function getBot(): Bot {
     registerPostPublishing(botInstance);
     registerReactionHandler(botInstance);
     registerModerationCallbacks(botInstance);
+    registerJoinLog(botInstance);
     // LLM-режим регистрируется ПОСЛЕ команд: команды типа /ping /status уже
     // отработали и вернули, а оставшиеся message:text попадут сюда.
     registerChatHandler(botInstance);
