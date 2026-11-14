@@ -97,6 +97,11 @@ function defaultModelFor(provider: LlmProvider): string {
   }
 }
 
+/** Автобан: столько подозрительных реакций… */
+export const REACTION_AUTOBAN_STRIKES = 3;
+/** …за это окно с первой из них (мс). Не из env — чтобы справка и код не расходились. */
+export const REACTION_AUTOBAN_WINDOW_MS = 60_000;
+
 function loadConfig() {
   const llmProvider = optionalEnum("LLM_PROVIDER", LLM_PROVIDERS, "openai");
   const llmApiKey = optional("LLM_API_KEY");
@@ -117,15 +122,13 @@ function loadConfig() {
     moderationChatId: requiredInt("MODERATION_CHAT_ID"),
     upstashRedisRestUrl: required("UPSTASH_REDIS_REST_URL"),
     upstashRedisRestToken: required("UPSTASH_REDIS_REST_TOKEN"),
-    /** Окно автобана: N+ подозрительных реакций за это время (мс) */
-    reactionAutoBanWindowMs: 60_000,
-    /** Кап страйков (реакций) в окне до автобана. */
-    reactionAutoBanStrikes: 3,
+    reactionAutoBanWindowMs: REACTION_AUTOBAN_WINDOW_MS,
+    reactionAutoBanStrikes: REACTION_AUTOBAN_STRIKES,
     /** TTL ключа сессии в Redis (сек), чуть больше окна */
     reactionModSessionTtlSec: 120,
     /**
      * После кнопки «Оставить» не считать реакции этого пользователя под автомодерацию
-     * (карточки и автобан по 2+ реакциям), пока ключ живёт в Redis.
+     * (карточки и автобан), пока ключ живёт в Redis.
      */
     reactionLeaveAloneTtlSec: 7 * 24 * 60 * 60,
 

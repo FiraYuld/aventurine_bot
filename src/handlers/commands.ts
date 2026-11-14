@@ -1,5 +1,11 @@
 import type { Bot, CommandContext, Context } from "grammy";
-import { config, isLlmUnlimitedDmUser, isOwnerUserId } from "../config.js";
+import {
+  config,
+  isLlmUnlimitedDmUser,
+  isOwnerUserId,
+  REACTION_AUTOBAN_STRIKES,
+  REACTION_AUTOBAN_WINDOW_MS,
+} from "../config.js";
 import {
   addIgnoredChannel,
   listIgnoredChannels,
@@ -33,7 +39,7 @@ export const HELP_TEXT = `
 Что я делаю:
 • Слежу за реакциями в привязанном чате обсуждения.
 • Если кто-то ставит реакцию, но не подписан на канал — карточка в чат модерации с кнопками «Забанить» / «Оставить»; бот-аккаунты баню сразу.
-• При 2+ таких реакциях за 60 с (в т.ч. на разных постах) без решения админов — автобан.
+• При ${REACTION_AUTOBAN_STRIKES} таких реакциях за ${REACTION_AUTOBAN_WINDOW_MS / 1000} с (в т.ч. на разных постах) без решения админов — автобан.
 • После бана отвечаю в чате обсуждения фразой «Схватил бота за жёпу!».
 • Логи банов и очередь — в MODERATION_CHAT_ID; ошибки — владельцу в ЛС.
 
@@ -144,34 +150,47 @@ export function registerCommands(bot: Bot): void {
   bot.command("status", async (ctx) => {
     if (!ctx.from || !isOwner(ctx.from.id)) return;
 
-    const checks: string[] = [];
+    const me = ctx.me;
+    const checks: string[] = [`Бот: @${escapeHtml(me.username)} (<code>${me.id}</code>)`];
 
-    try {
-      const me = await ctx.api.getMe();
-      checks.push(`Бот: @${me.username} (<code>${me.id}</code>)`);
-    } catch (err) {
-      checks.push(`Не удалось получить getMe: ${(err as Error).message}`);
-    }
+    type Right = "restrict" | "edit";
+    const targets: Array<{ label: string; id: number; needs: Right[] }> = [
+      { label: "Канал", id: config.channelId, needs: ["restrict", "edit"] },
+      ...(config.postTestChannelId !== undefined
+        ? [{ label: "Тестовый канал", id: config.postTestChannelId, needs: ["edit"] as Right[] }]
+        : []),
+      { label: "Чат обсуждения", id: config.chatId, needs: ["restrict"] },
+      { label: "Чат модерации", id: config.moderationChatId, needs: [] },
+    ];
+    const rightLabel: Record<Right, string> = {
+      restrict: "банить",
+      edit: "добавлять кнопки к постам (/post)",
+    };
 
-    for (const [label, id] of [
-      ["Канал", config.channelId],
-      ["Чат обсуждения", config.chatId],
-      ["Чат модерации", config.moderationChatId],
-    ] as const) {
+    for (const { label, id, needs } of targets) {
       try {
         const chat = await ctx.api.getChat(id);
-        const title = "title" in chat ? chat.title : "(?)";
-        const me = await ctx.api.getChatMember(id, (await ctx.api.getMe()).id);
-        const status = me.status;
-        const canRestrict =
-          (me.status === "administrator" && me.can_restrict_members) ||
-          me.status === "creator";
+        const title = "title" in chat && chat.title ? chat.title : "(?)";
+        const member = await ctx.api.getChatMember(id, me.id);
+        const has: Record<Right, boolean> = {
+          restrict:
+            member.status === "creator" ||
+            (member.status === "administrator" && member.can_restrict_members),
+          edit:
+            member.status === "creator" ||
+            (member.status === "administrator" && member.can_edit_messages === true),
+        };
+        const rights = needs
+          .map((r) => `${rightLabel[r]}: ${has[r] ? "да" : "<b>нет</b>"}`)
+          .join(", ");
         checks.push(
-          `${label} <code>${id}</code> «${title}»: статус <code>${status}</code>, ` +
-            `банить может: ${canRestrict ? "да" : "<b>нет</b>"}`,
+          `${label} <code>${id}</code> «${escapeHtml(title)}»: статус <code>${member.status}</code>` +
+            (rights ? `, ${rights}` : ""),
         );
       } catch (err) {
-        checks.push(`${label} <code>${id}</code>: ошибка — ${(err as Error).message}`);
+        checks.push(
+          `${label} <code>${id}</code>: ошибка — ${escapeHtml((err as Error).message)}`,
+        );
       }
     }
 

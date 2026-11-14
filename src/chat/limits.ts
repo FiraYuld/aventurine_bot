@@ -1,5 +1,5 @@
-import { Redis } from "@upstash/redis";
 import { getConfig } from "../config.js";
+import { getRedis } from "../redis.js";
 
 /**
  * Суточные лимиты для LLM-режима:
@@ -10,19 +10,6 @@ import { getConfig } from "../config.js";
  * Все ключи TTL-ятся до ближайшей полуночи в таймзоне `CHAT_TZ`
  * (поддерживаем Europe/Moscow, UTC+3 без DST).
  */
-
-let redis: Redis | undefined;
-
-function getRedis(): Redis {
-  if (!redis) {
-    const c = getConfig();
-    redis = new Redis({
-      url: c.upstashRedisRestUrl,
-      token: c.upstashRedisRestToken,
-    });
-  }
-  return redis;
-}
 
 const MSK_OFFSET_HOURS = 3;
 const DAY_MS = 24 * 60 * 60 * 1000;

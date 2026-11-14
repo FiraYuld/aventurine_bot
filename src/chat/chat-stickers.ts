@@ -1,5 +1,4 @@
-import { Redis } from "@upstash/redis";
-import { getConfig } from "../config.js";
+import { getRedis } from "../redis.js";
 
 /**
  * Реестр имён стикерпаков, замеченных в основном чате. Когда участник кидает
@@ -16,19 +15,6 @@ import { getConfig } from "../config.js";
 const KEY = "chat:sticker-sets";
 const MAX_SETS = 80;
 const TTL_SEC = 30 * 24 * 60 * 60;
-
-let redis: Redis | undefined;
-
-function getRedis(): Redis {
-  if (!redis) {
-    const c = getConfig();
-    redis = new Redis({
-      url: c.upstashRedisRestUrl,
-      token: c.upstashRedisRestToken,
-    });
-  }
-  return redis;
-}
 
 export async function recordStickerSetName(name: string): Promise<void> {
   const trimmed = name.trim();

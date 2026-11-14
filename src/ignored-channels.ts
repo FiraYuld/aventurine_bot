@@ -1,20 +1,6 @@
-import { Redis } from "@upstash/redis";
-import { getConfig } from "./config.js";
+import { getRedis } from "./redis.js";
 
 const KEY = "ignored-channels";
-
-let redis: Redis | undefined;
-
-function getRedis(): Redis {
-  if (!redis) {
-    const c = getConfig();
-    redis = new Redis({
-      url: c.upstashRedisRestUrl,
-      token: c.upstashRedisRestToken,
-    });
-  }
-  return redis;
-}
 
 /**
  * Добавить канал в ignore-list. Реакции от его имени не считаются спамом

@@ -1,5 +1,5 @@
-import { Redis } from "@upstash/redis";
-import { getConfig } from "../config.js";
+import type { Redis } from "@upstash/redis";
+import { getRedis } from "../redis.js";
 import { DRAFT_TTL_SECONDS, POST_DRAFT_STEPS, type PostDraft } from "./draft.js";
 
 export interface PostDraftStore {
@@ -9,14 +9,6 @@ export interface PostDraftStore {
 }
 
 type DraftRedis = Pick<Redis, "get" | "set" | "del">;
-
-function createRedis(): Redis {
-  const config = getConfig();
-  return new Redis({
-    url: config.upstashRedisRestUrl,
-    token: config.upstashRedisRestToken,
-  });
-}
 
 function key(userId: number): string {
   return `postdraft:${userId}`;
@@ -46,7 +38,7 @@ function parseDraft(raw: unknown): PostDraft | null {
 }
 
 export class RedisPostDraftStore implements PostDraftStore {
-  constructor(private readonly redis: DraftRedis = createRedis()) {}
+  constructor(private readonly redis: DraftRedis = getRedis()) {}
 
   async get(userId: number): Promise<PostDraft | null> {
     return parseDraft(await this.redis.get(key(userId)));

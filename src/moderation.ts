@@ -144,16 +144,6 @@ export async function banEverywhere(api: Api, userId: number): Promise<BanOutcom
   return outcome;
 }
 
-// Bot API 10.0 (08.05.2026): метод появился позже, чем grammy 1.42 успела
-// его покрыть типами. Локальный интерфейс — снять, когда выйдет релиз grammy
-// с поддержкой Bot API 10.0, и звать api.deleteAllMessageReactions напрямую.
-interface RawApiWithDeleteReactions {
-  deleteAllMessageReactions: (args: {
-    chat_id: number;
-    user_id: number;
-  }) => Promise<boolean>;
-}
-
 export interface ReactionWipeResult {
   ok: boolean;
   error?: string;
@@ -164,11 +154,8 @@ export async function deleteAllReactionsOf(
   userId: number,
 ): Promise<ReactionWipeResult> {
   try {
-    const raw = api.raw as unknown as RawApiWithDeleteReactions;
-    await raw.deleteAllMessageReactions({
-      chat_id: config.chatId,
-      user_id: userId,
-    });
+    // Bot API 10.0, typed since grammY 1.46.
+    await api.deleteAllMessageReactionsUser(config.chatId, userId);
     return { ok: true };
   } catch (err) {
     if (err instanceof GrammyError) {
