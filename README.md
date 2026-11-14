@@ -33,6 +33,7 @@ The optional **LLM persona mode** lets the bot reply in character in the discuss
 | **Human-in-the-loop** | Moderation cards with **Ban** / **Keep**; stale cards still work after the Redis session expired |
 | **Auto-ban** | 3 suspicious reactions within 60 s → ban (strike session in Redis, serialised per user with a Redis lock) |
 | **Channel reactions** | Reactions on behalf of a foreign channel → card with **Ban channel** (`banChatSenderChat` + remove its reactions) / **Keep** (adds to the ignore-list). Own channel, anonymous admins and ignore-listed channels are silent |
+| **VPN nicknames** | A user with "vpn"/"впн" in the name or username (V.P.N, В-П-Н, cheap_vpn_bot…) writes in the chat → card **Ban** / **Keep** (Keep = not asked again for 90 days) |
 | **Join log** | Every join to the chat or channel → silent entry in the moderation chat: profile link, ID, how they joined, bio, linked personal channel, keyword hints, **Ban** button |
 | **After any ban** | Ban by anyone (button, another bot, manual) → bot bans in both chat and channel and removes the "joined the group" message. Messages and reactions are deleted **only** after a separate **🧹** confirmation |
 | **Inline post buttons** | `/post` attaches URL buttons to a post you published yourself, so Premium custom emoji survive |
