@@ -5,6 +5,7 @@ import { registerModerationCallbacks } from "./handlers/moderation-callbacks.js"
 import { registerCommands } from "./handlers/commands.js";
 import { registerPostPublishing } from "./handlers/post-publishing.js";
 import { registerJoinLog } from "./handlers/join-log.js";
+import { registerVpnNickname } from "./handlers/vpn-nickname.js";
 import { registerChatHandler } from "./chat/handler.js";
 import { scopeMiddleware } from "./middleware/scope.js";
 
@@ -22,6 +23,7 @@ export function getBot(): Bot {
     registerReactionHandler(botInstance);
     // До registerModerationCallbacks: там catch-all callback_query, он съел бы кнопку «Забанить» журнала.
     registerJoinLog(botInstance);
+    registerVpnNickname(botInstance);
     registerModerationCallbacks(botInstance);
     // LLM-режим регистрируется ПОСЛЕ команд: команды типа /ping /status уже
     // отработали и вернули, а оставшиеся message:text попадут сюда.
