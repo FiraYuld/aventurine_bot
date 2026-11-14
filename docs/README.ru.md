@@ -28,8 +28,10 @@ Telegram-бот для канала с привязанным чатом обс�
 4. Если за **60 секунд** с первой такой реакции набирается **3** реакции (в т.ч. на
    **других** сообщениях — как у ботов), а админы не нажали кнопку — **автобан**.
    Реакции одного человека обрабатываются строго по очереди (замок в Redis).
-5. После бана по реакции бот удаляет сообщения и реакции забаненного и отвечает
-   в чате фразой «Схватил бота за жёпу!».
+5. После бана по реакции бот банит и в чате, и в канале, отвечает в чате фразой
+   «Схватил бота за жёпу!», а в логе бана ставит кнопку **🧹 Удалить сообщения и
+   реакции** — сам ничего не удаляет (раньше удалял сразу, и случайно забаненные
+   живые люди теряли все сообщения).
 6. Дополнительные риск-сигналы (нет username, «подозрительное» имя, спам-маркер
    в нике) попадают в текст карточки; спам-маркер — сразу автобан.
 
@@ -140,7 +142,7 @@ npm run local
 ```bash
 ngrok http 3000
 # затем установить webhook вручную:
-# https://<ngrok-url>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
+# curl -H "Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>" https://<ngrok-url>/api/setup
 ```
 
 ### Staging-среда (обязательно для экспериментов с LLM-режимом)
@@ -177,7 +179,7 @@ cp .env.staging .env && npm run local
 ngrok http 3000
 
 # 3. Установить webhook ТЕСТОВОГО бота на ngrok-URL:
-#    https://<ngrok>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET из .env.staging>
+#    curl -H "Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET из .env.staging>" https://<ngrok>/api/setup
 ```
 
 После остановки dev-сервера тестовый бот перестаёт отвечать (webhook бьётся
@@ -235,10 +237,11 @@ vercel --prod
 
 ### Установка webhook
 
-Один раз открой в браузере:
+Один раз выполни в терминале (секрет передаётся заголовком, не в адресе — так он
+не попадает в логи Vercel и историю браузера; старый вариант `?key=` бот отклоняет):
 
-```
-https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
+```bash
+curl -H "Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>" https://<твой-домен>/api/setup
 ```
 
 Должен вернуться JSON `{"ok": true, "message": "Webhook установлен на ..."}`.
@@ -247,7 +250,8 @@ https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 (последний нужен журналу входов и обработке банов). После изменения списка в
 коде снова вызови `/api/setup`.
 
-Полезные параметры:
+Полезные параметры (с тем же заголовком, например
+`curl -H "Authorization: Bearer …" "https://<домен>/api/setup?action=info"`):
 - `?action=info` — посмотреть текущее состояние webhook
 - `?action=delete` — удалить webhook (например, перед перенастройкой)
 - `?action=set` — установить (по умолчанию)
@@ -334,7 +338,7 @@ https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
    vercel env add LLM_PROVIDER production   # openai | anthropic | openrouter
    vercel env add LLM_MODEL production      # например gpt-4o-mini
    ```
-3. `vercel --prod` → `/api/setup?key=…` → проверка `/api/health`
+3. `vercel --prod` → `/api/setup` (с заголовком `Authorization`) → проверка `/api/health`
    (`llm_enabled: true`).
 
 Если `LLM_API_KEY` **не задан** — хендлер просто не регистрируется, бот
@@ -362,8 +366,9 @@ https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 - Все секреты — только в `vercel env`, никогда не коммитить.
 - Если токен бота попал в публичное место (чат с агентом, скрин и т.п.) —
   обязательно сделать `/revoke` у @BotFather и обновить `TELEGRAM_BOT_TOKEN`.
-- Endpoint `/api/setup` защищён параметром `?key=`, который должен совпадать с
-  `TELEGRAM_WEBHOOK_SECRET`. Без правильного ключа возвращает 403.
+- Endpoint `/api/setup` требует заголовок `Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>`
+  (или `X-Setup-Key`); сравнение за постоянное время. Без правильного ключа — 403,
+  старый вариант `?key=` в адресе — 400 (чтобы секрет не попадал в логи).
 - Telegram при каждом запросе на webhook присылает заголовок
   `X-Telegram-Bot-Api-Secret-Token` со значением `TELEGRAM_WEBHOOK_SECRET`.
   grammy его проверяет автоматически — посторонние запросы будут отброшены.
@@ -379,7 +384,7 @@ https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 | `getChatMember: user not found` | Юзер вообще не известен Telegram (редкое) | Считается «не подписан» |
 | Владельцу приходят ошибки «обработка реакции» на каждую реакцию | Бот не может проверить подписку (`chat not found`, потеряны права в канале) | Проверить `CHANNEL_ID` и `/status`. Банов в этом случае нет — так задумано |
 | Реакции не приходят в webhook | `allowed_updates` не содержит `message_reaction` | Дёрнуть `/api/setup` ещё раз, проверить `?action=info` |
-| Кнопки в чате модерации не реагируют | Webhook без `callback_query` | Снова открыть `/api/setup?key=...`, в `info` должен быть `callback_query` |
+| Кнопки в чате модерации не реагируют | Webhook без `callback_query` | Снова вызвать `/api/setup` (curl с `Authorization`), в `info` должен быть `callback_query` |
 | Нет записей журнала входов | Webhook без `chat_member` или бот не админ канала/чата | `/api/setup?action=info`, `/status` |
 | `/post`: «Не удалось добавить кнопки» | Нет права «Редактировать сообщения» в канале | Выдать право, проверить `/status` |
 | Сообщение о входе не удалилось | Ему больше 48 часов — ограничение Telegram | Удалить вручную |

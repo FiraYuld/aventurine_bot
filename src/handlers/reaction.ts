@@ -173,22 +173,8 @@ export function registerReactionHandler(bot: Bot): void {
       return;
     }
 
-    if (user.is_bot) {
-      try {
-        await executeReactionBan({
-          api: ctx.api,
-          user,
-          userId: user.id,
-          reasons: ["бот-аккаунт"],
-          discussionMessageId: message_id,
-          logTitle: "Бан бот-аккаунт",
-          reactionEvents: [{ messageId: message_id, emojis: reactionEmojis(new_reaction) }],
-        });
-      } catch (err) {
-        await logError(ctx.api, "обработка реакции бота", err);
-      }
-      return;
-    }
+    // Telegram never delivers reactions set by bots ("The update isn't received for
+    // reactions set by bots"), so there is no bot-account branch here.
 
     // One user at a time: parallel webhook deliveries must not race on the session.
     await withReactionUserLock(user.id, async () => {

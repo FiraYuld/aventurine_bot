@@ -113,8 +113,8 @@ npm run local          # Vercel dev on :3000
 
 Expose webhooks with [ngrok](https://ngrok.com/) and register:
 
-```text
-https://<your-tunnel>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
+```bash
+curl -H "Authorization: Bearer $TELEGRAM_WEBHOOK_SECRET" https://<your-tunnel>/api/setup
 ```
 
 Verify: `GET /api/health` → `bot_env`, `llm_enabled`, env presence flags.
@@ -130,7 +130,14 @@ vercel env add TELEGRAM_BOT_TOKEN production
 vercel --prod
 ```
 
-Then open `https://<your-domain>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>` once. Confirm `allowed_updates` includes `message_reaction`, `callback_query` and `chat_member` (`?action=info`).
+Then register the webhook once (the secret goes in a header, never in the URL):
+
+```bash
+curl -H "Authorization: Bearer $TELEGRAM_WEBHOOK_SECRET" https://<your-domain>/api/setup
+curl -H "Authorization: Bearer $TELEGRAM_WEBHOOK_SECRET" "https://<your-domain>/api/setup?action=info"
+```
+
+Confirm `allowed_updates` includes `message_reaction`, `callback_query` and `chat_member`.
 
 ---
 
@@ -160,7 +167,7 @@ When someone is banned in the chat or channel — via **🔨 Забанить**,
 
 Only that **🧹** button deletes the user's messages (re-ban with `revoke_messages`) and reactions. A real person banned by mistake keeps their messages unless someone confirms.
 
-> The older reaction flow (auto-ban after 3 reactions, **Ban** on a reaction card) still deletes messages and reactions immediately — it targets spam bots.
+The reaction flow (auto-ban after 3 reactions, **Ban** on a reaction card) works the same way: it bans in both places and puts **🧹** under the ban log instead of deleting right away.
 
 ### Inline post buttons (`/post`)
 
@@ -200,7 +207,7 @@ tools/chat-analysis/ offline chat export analysis (optional)
 ## Security
 
 - Secrets only in environment variables — never commit `.env`
-- `/api/setup` protected by `?key=` matching `TELEGRAM_WEBHOOK_SECRET`
+- `/api/setup` requires `Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>` (or `X-Setup-Key`), compared in constant time; the old `?key=` form is rejected so the secret never lands in request logs
 - Telegram webhook header `X-Telegram-Bot-Api-Secret-Token` validated by grammY
 - Revoke and rotate `TELEGRAM_BOT_TOKEN` if leaked
 

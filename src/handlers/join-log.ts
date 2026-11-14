@@ -1,15 +1,8 @@
 import type { Api, Bot } from "grammy";
 import type { User } from "grammy/types";
 import { config } from "../config.js";
-import {
-  CLEANUP_DEDUPE_TTL_SEC,
-  JOIN_LOG_TTL_SEC,
-  JOIN_MESSAGE_TTL_SEC,
-  parseWipeCallback,
-  runBanFollowUp,
-  runWipe,
-  type CleanupStore,
-} from "../ban-cleanup.js";
+import { parseWipeCallback, runBanFollowUp, runWipe } from "../ban-cleanup.js";
+import { cleanupDeps, rememberJoinLog, rememberJoinMessage } from "../ban-cleanup-store.js";
 import {
   buildJoinLogHtml,
   isBan,
@@ -20,7 +13,6 @@ import {
   type PersonalChannelInfo,
 } from "../join-log.js";
 import { logError } from "../logger.js";
-import { getRedis } from "../redis.js";
 
 const INSIDE = new Set(["creator", "administrator", "member"]);
 
@@ -63,69 +55,6 @@ async function readProfile(
     console.error("[join-log] getChat(user) failed", { userId: user.id, err });
     return { profileReadable: false };
   }
-}
-
-const joinMsgKey = (userId: number) => `joinmsg:${userId}`;
-const joinLogKey = (userId: number) => `joinlog:${userId}`;
-const cleanupKey = (userId: number) => `bancleanup:${userId}`;
-
-export function createCleanupStore(): CleanupStore {
-  const r = getRedis();
-  return {
-    async claimCleanup(userId) {
-      const ok = await r.set(cleanupKey(userId), "1", { nx: true, ex: CLEANUP_DEDUPE_TTL_SEC });
-      return ok === "OK";
-    },
-    async getJoinMessageIds(userId) {
-      const raw = (await r.smembers(joinMsgKey(userId))) as unknown as Array<string | number>;
-      return (Array.isArray(raw) ? raw : [])
-        .map((v) => Number(v))
-        .filter((n) => Number.isSafeInteger(n) && n > 0);
-    },
-    async clearJoinMessageIds(userId) {
-      await r.del(joinMsgKey(userId));
-    },
-    async getJoinLog(userId) {
-      const raw: unknown = await r.get(joinLogKey(userId));
-      const obj = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
-      if (
-        obj &&
-        typeof obj === "object" &&
-        typeof (obj as { messageId?: unknown }).messageId === "number" &&
-        typeof (obj as { html?: unknown }).html === "string"
-      ) {
-        return obj as { messageId: number; html: string };
-      }
-      return null;
-    },
-    async setJoinLog(userId, entry) {
-      await rememberJoinLog(userId, entry.messageId, entry.html);
-    },
-  };
-}
-
-function cleanupDeps(api: Api) {
-  return {
-    api,
-    store: createCleanupStore(),
-    targets: {
-      chatId: config.chatId,
-      channelId: config.channelId,
-      moderationChatId: config.moderationChatId,
-    },
-  };
-}
-
-async function rememberJoinMessage(userId: number, messageId: number): Promise<void> {
-  const r = getRedis();
-  await r.sadd(joinMsgKey(userId), String(messageId));
-  await r.expire(joinMsgKey(userId), JOIN_MESSAGE_TTL_SEC);
-}
-
-async function rememberJoinLog(userId: number, messageId: number, html: string): Promise<void> {
-  await getRedis().set(joinLogKey(userId), JSON.stringify({ messageId, html }), {
-    ex: JOIN_LOG_TTL_SEC,
-  });
 }
 
 /** Step 1 after a ban: reversible (ban in both places, join message, mark + wipe button). */
