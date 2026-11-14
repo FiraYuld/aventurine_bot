@@ -54,6 +54,19 @@ function shouldProcessReactionChange(
   return reactionSetSignature(newR) !== reactionSetSignature(oldR);
 }
 
+/** Reactions on behalf of these chats are never moderated or reported. */
+export function isTrustedActorChat(
+  actorChatId: number,
+  own: { channelId: number; chatId: number },
+): boolean {
+  return actorChatId === own.channelId || actorChatId === own.chatId;
+}
+
+function errorText(err: unknown): string {
+  if (err instanceof GrammyError) return err.description;
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function registerReactionHandler(bot: Bot): void {
   bot.on("message_reaction", async (ctx) => {
     const update = ctx.messageReaction;
@@ -67,36 +80,35 @@ export function registerReactionHandler(bot: Bot): void {
 
     if (!user) {
       if (actor_chat) {
+        // Our own channel, the chat itself (anonymous admins) and ignore-listed channels
+        // may react freely: no action and no notice.
+        const trusted = isTrustedActorChat(actor_chat.id, {
+          channelId: config.channelId,
+          chatId: config.chatId,
+        });
+        if (trusted || (await isChannelIgnored(actor_chat.id))) return;
+
         const msgUrl = discussionPostPublicLink(config.chatId, message_id);
         const em = reactionEmojis(new_reaction).map(escapeHtml).join(" ");
         const actorLine = formatActorChatHtml(actor_chat);
         const msgLink = `<a href="${escapeHtml(msgUrl)}">сообщение ${message_id}</a>`;
 
         let banLine: string;
-        if (actor_chat.id === config.channelId) {
-          banLine =
-            "\n\n<b>Исключение из обсуждения:</b> не выполнялось — это привязанный канал (реакция от его имени).";
-        } else if (actor_chat.id === config.chatId) {
-          banLine =
-            "\n\n<b>Исключение из обсуждения:</b> не выполнялось — источник совпадает с чатом обсуждения.";
-        } else if (await isChannelIgnored(actor_chat.id)) {
-          banLine =
-            "\n\n<b>Исключение из обсуждения:</b> не выполнялось — канал в ignore-list (см. /ignore_channel_list).";
-        } else {
+        try {
+          // A channel acting in the group is a *sender chat*: banChatMember rejects it
+          // with "invalid user_id specified"; banChatSenderChat is the right method.
+          await ctx.api.banChatSenderChat(config.chatId, actor_chat.id);
+          banLine = "\n\n<b>Канал заблокирован в обсуждении</b> (<code>banChatSenderChat</code>).";
           try {
-            await ctx.api.banChatMember(config.chatId, actor_chat.id, { revoke_messages: true });
-            banLine = "\n\n<b>Исключение из обсуждения:</b> выполнено (<code>banChatMember</code>).";
+            await ctx.api.deleteAllMessageReactionsChat(config.chatId, actor_chat.id);
+            banLine += " Его реакции сняты.";
           } catch (err) {
-            const desc =
-              err instanceof GrammyError
-                ? err.description
-                : err instanceof Error
-                  ? err.message
-                  : String(err);
-            banLine =
-              `\n\n<b>Исключение из обсуждения:</b> API не дал — <code>${escapeHtml(desc)}</code>. ` +
-              "Можно вручную ограничить участника по ссылке на чат выше (если это канал в группе — через список участников).";
+            banLine += ` Реакции снять не удалось — <code>${escapeHtml(errorText(err))}</code>.`;
           }
+        } catch (err) {
+          banLine =
+            `\n\n<b>Заблокировать канал не удалось</b> — <code>${escapeHtml(errorText(err))}</code>. ` +
+            "Можно вручную: участники чата → этот канал → заблокировать.";
         }
 
         await logInfo(
