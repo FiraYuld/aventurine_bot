@@ -1,5 +1,4 @@
-import { Redis } from "@upstash/redis";
-import { getConfig } from "./config.js";
+import { getRedis } from "./redis.js";
 import { withLock, type LockRedis } from "./user-lock.js";
 
 /** Serialises reaction handling for one user (see user-lock.ts). */
@@ -27,19 +26,6 @@ export interface ReactionModSession {
   reactionEvents?: ReactionModEvent[];
   /** Причины риска на момент первой реакции в сессии */
   reasons?: string[];
-}
-
-let redis: Redis | undefined;
-
-function getRedis(): Redis {
-  if (!redis) {
-    const c = getConfig();
-    redis = new Redis({
-      url: c.upstashRedisRestUrl,
-      token: c.upstashRedisRestToken,
-    });
-  }
-  return redis;
 }
 
 function key(userId: number): string {

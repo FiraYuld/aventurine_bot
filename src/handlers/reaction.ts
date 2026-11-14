@@ -128,10 +128,12 @@ export function registerReactionHandler(bot: Bot): void {
     // One user at a time: parallel webhook deliveries must not race on the session.
     await withReactionUserLock(user.id, async () => {
       try {
-        if (await isAdminAnywhere(ctx.api, user.id)) return;
-
+        // Subscription first (1 API call): most reactors are subscribers and stop here.
+        // The admin check (2 calls) only matters for unsubscribed chat admins.
         const risk = await computeRisk(ctx.api, user);
         if (!risk.shouldBan) return;
+
+        if (await isAdminAnywhere(ctx.api, user.id)) return;
 
         if (await isReactionLeaveAlone(user.id)) {
           return;

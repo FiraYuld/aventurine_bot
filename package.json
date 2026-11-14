@@ -32,8 +32,8 @@
     "analysis:compile": "node --env-file=.env --import tsx tools/chat-analysis/04-compile-lore.ts"
   },
   "dependencies": {
-    "@upstash/redis": "^1.34.3",
-    "grammy": "^1.30.0"
+    "@upstash/redis": "^1.41.0",
+    "grammy": "^1.46.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

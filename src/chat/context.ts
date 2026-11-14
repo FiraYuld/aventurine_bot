@@ -1,5 +1,4 @@
-import { Redis } from "@upstash/redis";
-import { getConfig } from "../config.js";
+import { getRedis } from "../redis.js";
 
 /**
  * Короткий буфер последних сообщений в основном чате (`CHAT_ID`).
@@ -21,19 +20,6 @@ const KEY = "chat:recent";
 const MAX_ITEMS = 20;
 const MAX_TEXT_CHARS = 400;
 const TTL_SEC = 6 * 60 * 60;
-
-let redis: Redis | undefined;
-
-function getRedis(): Redis {
-  if (!redis) {
-    const c = getConfig();
-    redis = new Redis({
-      url: c.upstashRedisRestUrl,
-      token: c.upstashRedisRestToken,
-    });
-  }
-  return redis;
-}
 
 function truncate(s: string, n: number): string {
   const flat = s.replace(/\s+/g, " ").trim();
