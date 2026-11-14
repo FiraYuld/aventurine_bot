@@ -4,6 +4,7 @@ import { registerReactionHandler } from "./handlers/reaction.js";
 import { registerModerationCallbacks } from "./handlers/moderation-callbacks.js";
 import { registerCommands } from "./handlers/commands.js";
 import { registerPostPublishing } from "./handlers/post-publishing.js";
+import { registerJoinLog } from "./handlers/join-log.js";
 import { registerChatHandler } from "./chat/handler.js";
 import { scopeMiddleware } from "./middleware/scope.js";
 
@@ -19,6 +20,8 @@ export function getBot(): Bot {
     registerCommands(botInstance);
     registerPostPublishing(botInstance);
     registerReactionHandler(botInstance);
+    // До registerModerationCallbacks: там catch-all callback_query, он съел бы кнопку «Забанить» журнала.
+    registerJoinLog(botInstance);
     registerModerationCallbacks(botInstance);
     // LLM-режим регистрируется ПОСЛЕ команд: команды типа /ping /status уже
     // отработали и вернули, а оставшиеся message:text попадут сюда.
