@@ -108,10 +108,10 @@ function loadConfig() {
     webhookSecret: required("TELEGRAM_WEBHOOK_SECRET"),
     channelId: requiredInt("CHANNEL_ID"),
     /**
-     * Второй канал для мастера `/post` (кнопка выбора рядом с CHANNEL_ID).
-     * Модерация реакций по-прежнему использует только CHANNEL_ID.
+     * Тестовый канал для мастера `/post`: проверить кнопки перед боевым постом.
+     * Модерация реакций использует только CHANNEL_ID.
      */
-    secondaryChannelId: optionalIntValue("SECONDARY_CHANNEL_ID"),
+    postTestChannelId: optionalIntValue("POST_TEST_CHANNEL_ID"),
     chatId: requiredInt("CHAT_ID"),
     adminLogChatId: requiredInt("ADMIN_LOG_CHAT_ID"),
     moderationChatId: requiredInt("MODERATION_CHAT_ID"),

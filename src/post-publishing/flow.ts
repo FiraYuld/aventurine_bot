@@ -1,5 +1,11 @@
 import { InlineKeyboard } from "grammy";
-import { buildPostKeyboard, isHttpUrl, type PostDraft } from "./draft.js";
+import {
+  buildPostKeyboard,
+  isHttpUrl,
+  parsePostLink,
+  type PostDraft,
+  type PostRef,
+} from "./draft.js";
 import type { PostDraftStore } from "./store.js";
 
 export type ChatType = "private" | "group" | "supergroup" | "channel";
@@ -12,9 +18,13 @@ export interface ActorInput {
 
 export interface MessageInput extends ActorInput {
   messageId: number;
-  photo?: boolean;
-  caption?: string;
   text?: string;
+  /** Set when the message is a forward of a channel post (forward_origin.type === "channel"). */
+  forwardedFrom?: PostRef;
+  /** Message is forwarded, but not from a channel (user, hidden user, group). */
+  forwardedFromNonChannel?: boolean;
+  /** Message belongs to an album (media group). */
+  mediaGroup?: boolean;
 }
 
 export interface CallbackInput extends ActorInput {
@@ -24,27 +34,27 @@ export interface CallbackInput extends ActorInput {
 
 export interface PostPublishingApi {
   getChannelTitle(channelId: number): Promise<string>;
+  /** Resolves a public channel @username to its numeric chat id. */
+  resolveChannelId(username: string): Promise<number>;
   sendText(chatId: number, text: string, options?: { replyMarkup?: unknown }): Promise<void>;
+  /** Copies the channel post into `toChatId` (used for the preview in the owner DM). */
   copyPost(
     fromChatId: number,
     messageId: number,
     toChatId: number,
     options?: { replyMarkup?: unknown },
   ): Promise<void>;
+  /** Replaces the inline keyboard of an existing channel post; caption and entities stay intact. */
+  attachButtons(channelId: number, messageId: number, replyMarkup: unknown): Promise<void>;
   answerCallback(callbackQueryId: string): Promise<void>;
 }
 
+const ASK_POST_TEXT =
+  "Опубликуйте пост в канале сами (так сохранятся премиум-эмодзи), затем перешлите его сюда " +
+  "или пришлите ссылку на него (ПКМ / долгое нажатие на пост → «Копировать ссылку»).";
+
 function isAuthorized(input: ActorInput, ownerId: number): boolean {
   return input.userId === ownerId && input.chatType === "private" && input.chatId === ownerId;
-}
-
-function parseChannelCallback(data: string): number | null {
-  const prefix = "post:channel:";
-  if (!data.startsWith(prefix)) return null;
-  const raw = data.slice(prefix.length);
-  const id = Number(raw);
-  if (!Number.isFinite(id) || !Number.isInteger(id) || String(id) !== raw) return null;
-  return id;
 }
 
 export class PostPublishingFlow {
@@ -65,10 +75,6 @@ export class PostPublishingFlow {
     return this.deps.ownerId;
   }
 
-  private get channelIds(): readonly number[] {
-    return this.deps.channelIds;
-  }
-
   private get store(): PostDraftStore {
     return this.deps.store;
   }
@@ -78,49 +84,22 @@ export class PostPublishingFlow {
   }
 
   private isAllowedChannel(channelId: number): boolean {
-    return this.channelIds.includes(channelId);
+    return this.deps.channelIds.includes(channelId);
+  }
+
+  private async channelTitle(channelId: number): Promise<string> {
+    try {
+      return await this.api.getChannelTitle(channelId);
+    } catch {
+      return String(channelId);
+    }
   }
 
   async start(input: ActorInput): Promise<void> {
     if (!isAuthorized(input, this.ownerId)) return;
 
-    await this.store.delete(this.ownerId);
-
-    const channels: { id: number; title: string }[] = [];
-    for (const channelId of this.channelIds) {
-      try {
-        channels.push({
-          id: channelId,
-          title: await this.api.getChannelTitle(channelId),
-        });
-      } catch {
-        // skip unavailable channel; fail below if none remain
-      }
-    }
-
-    if (channels.length === 0) {
-      await this.api.sendText(
-        this.ownerId,
-        "Не удалось получить данные канала. Попробуйте позже.",
-      );
-      return;
-    }
-
-    const draft: PostDraft = {
-      step: "select_channel",
-      channelId: channels[0]!.id,
-      buttons: [],
-    };
-    await this.store.set(this.ownerId, draft);
-
-    const keyboard = new InlineKeyboard();
-    for (const channel of channels) {
-      keyboard.text(channel.title, `post:channel:${channel.id}`).row();
-    }
-    keyboard.inline_keyboard.pop();
-    await this.api.sendText(this.ownerId, "Выберите канал для публикации:", {
-      replyMarkup: keyboard,
-    });
+    await this.store.set(this.ownerId, { step: "await_post", buttons: [] });
+    await this.api.sendText(this.ownerId, ASK_POST_TEXT);
   }
 
   async cancel(input: ActorInput): Promise<boolean> {
@@ -140,23 +119,8 @@ export class PostPublishingFlow {
     if (!draft) return false;
 
     switch (draft.step) {
-      case "await_post": {
-        if (!input.photo || !input.caption?.trim()) {
-          if (input.photo && !input.caption?.trim()) {
-            await this.api.sendText(this.ownerId, "Пришлите одно фото с непустой подписью.");
-          }
-          return true;
-        }
-
-        await this.store.set(this.ownerId, {
-          ...draft,
-          step: "await_button_text",
-          sourceChatId: input.chatId,
-          sourceMessageId: input.messageId,
-        });
-        await this.api.sendText(this.ownerId, "Введите текст первой кнопки:");
-        return true;
-      }
+      case "await_post":
+        return this.handlePostReference(draft, input);
 
       case "await_button_text": {
         const text = input.text?.trim();
@@ -198,6 +162,66 @@ export class PostPublishingFlow {
     }
   }
 
+  private async handlePostReference(draft: PostDraft, input: MessageInput): Promise<boolean> {
+    if (input.mediaGroup) {
+      await this.api.sendText(
+        this.ownerId,
+        "К альбому нельзя прикрепить кнопки — это ограничение Telegram. Нужен пост из одного фото или текста.",
+      );
+      return true;
+    }
+
+    let ref: PostRef | null = input.forwardedFrom ?? null;
+
+    if (!ref && input.forwardedFromNonChannel) {
+      await this.api.sendText(this.ownerId, "Это пересылка не из канала. " + ASK_POST_TEXT);
+      return true;
+    }
+
+    if (!ref && input.text) {
+      const link = parsePostLink(input.text);
+      if (link?.kind === "private") {
+        ref = { channelId: link.channelId, messageId: link.messageId };
+      } else if (link?.kind === "public") {
+        try {
+          ref = {
+            channelId: await this.api.resolveChannelId(link.username),
+            messageId: link.messageId,
+          };
+        } catch {
+          await this.api.sendText(this.ownerId, `Не удалось найти канал @${link.username}.`);
+          return true;
+        }
+      }
+    }
+
+    if (!ref) {
+      await this.api.sendText(this.ownerId, ASK_POST_TEXT);
+      return true;
+    }
+
+    if (!this.isAllowedChannel(ref.channelId)) {
+      await this.api.sendText(
+        this.ownerId,
+        "Этот канал не подключён к публикации. Перешлите пост из канала, где бот — администратор.",
+      );
+      return true;
+    }
+
+    await this.store.set(this.ownerId, {
+      ...draft,
+      step: "await_button_text",
+      channelId: ref.channelId,
+      messageId: ref.messageId,
+    });
+    const title = await this.channelTitle(ref.channelId);
+    await this.api.sendText(
+      this.ownerId,
+      `Пост из «${title}» принят. Введите текст первой кнопки:`,
+    );
+    return true;
+  }
+
   async handleCallback(input: CallbackInput): Promise<boolean> {
     if (!isAuthorized(input, this.ownerId)) return false;
 
@@ -211,19 +235,6 @@ export class PostPublishingFlow {
         await this.api.sendText(this.ownerId, "Сценарий публикации уже завершён.");
       }
       return false;
-    }
-
-    const selectedChannelId = parseChannelCallback(input.data);
-    if (selectedChannelId !== null) {
-      if (draft.step !== "select_channel") return false;
-      if (!this.isAllowedChannel(selectedChannelId)) return false;
-      await this.store.set(this.ownerId, {
-        ...draft,
-        step: "await_post",
-        channelId: selectedChannelId,
-      });
-      await this.api.sendText(this.ownerId, "Пришлите одно фото с непустой подписью.");
-      return true;
     }
 
     switch (input.data) {
@@ -261,57 +272,52 @@ export class PostPublishingFlow {
   }
 
   private async showPreview(draft: PostDraft): Promise<boolean> {
-    if (
-      draft.sourceChatId === undefined ||
-      draft.sourceMessageId === undefined ||
-      draft.buttons.length === 0
-    ) {
+    if (draft.channelId === undefined || draft.messageId === undefined || draft.buttons.length === 0) {
       return false;
     }
 
     const replyMarkup = buildPostKeyboard(draft.buttons).build();
+    let previewShown = true;
     try {
-      await this.api.copyPost(
-        draft.sourceChatId,
-        draft.sourceMessageId,
-        this.ownerId,
-        { replyMarkup },
-      );
+      await this.api.copyPost(draft.channelId, draft.messageId, this.ownerId, { replyMarkup });
     } catch {
-      return false;
+      // e.g. the channel restricts saving content: still allow attaching the buttons
+      previewShown = false;
     }
+
+    const title = await this.channelTitle(draft.channelId);
+    const buttonsList = draft.buttons.map((b) => `• ${b.text} — ${b.url}`).join("\n");
+    const text = previewShown
+      ? `Так будет выглядеть пост в «${title}». Добавить кнопки?`
+      : `Превью недоступно, но кнопки можно прикрепить к посту в «${title}»:\n${buttonsList}`;
 
     const controlKeyboard = new InlineKeyboard()
       .text("Опубликовать", "post:publish")
       .text("Отмена", "post:cancel");
-    await this.api.sendText(this.ownerId, "Проверьте превью и опубликуйте пост:", {
-      replyMarkup: controlKeyboard,
-    });
+    await this.api.sendText(this.ownerId, text, { replyMarkup: controlKeyboard });
 
     await this.store.set(this.ownerId, { ...draft, step: "preview" });
     return true;
   }
 
   private async publish(draft: PostDraft): Promise<boolean> {
-    if (draft.sourceChatId === undefined || draft.sourceMessageId === undefined) {
+    if (draft.channelId === undefined || draft.messageId === undefined) {
       return false;
     }
 
     const replyMarkup = buildPostKeyboard(draft.buttons).build();
     try {
-      await this.api.copyPost(
-        draft.sourceChatId,
-        draft.sourceMessageId,
-        draft.channelId,
-        { replyMarkup },
-      );
+      await this.api.attachButtons(draft.channelId, draft.messageId, replyMarkup);
     } catch {
-      await this.api.sendText(this.ownerId, "Не удалось опубликовать пост. Попробуйте ещё раз.");
+      await this.api.sendText(
+        this.ownerId,
+        "Не удалось добавить кнопки. Проверьте, что пост не удалён и у бота есть право редактировать сообщения в канале.",
+      );
       return false;
     }
 
     await this.store.delete(this.ownerId);
-    await this.api.sendText(this.ownerId, "Пост опубликован.");
+    await this.api.sendText(this.ownerId, "Кнопки добавлены к посту.");
     return true;
   }
 }

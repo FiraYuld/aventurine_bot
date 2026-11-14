@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { getConfig } from "../config.js";
-import { DRAFT_TTL_SECONDS, type PostDraft } from "./draft.js";
+import { DRAFT_TTL_SECONDS, POST_DRAFT_STEPS, type PostDraft } from "./draft.js";
 
 export interface PostDraftStore {
   get(userId: number): Promise<PostDraft | null>;
@@ -35,8 +35,9 @@ function parseDraft(raw: unknown): PostDraft | null {
     typeof raw === "object" &&
     raw !== null &&
     "step" in raw &&
-    "channelId" in raw &&
-    "buttons" in raw
+    (POST_DRAFT_STEPS as readonly unknown[]).includes(raw.step) &&
+    "buttons" in raw &&
+    Array.isArray(raw.buttons)
   ) {
     return raw as PostDraft;
   }

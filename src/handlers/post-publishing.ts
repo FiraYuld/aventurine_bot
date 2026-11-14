@@ -1,4 +1,4 @@
-import type { Bot, Context } from "grammy";
+import { GrammyError, type Bot, type Context } from "grammy";
 import type { InlineKeyboardMarkup } from "grammy/types";
 import { config } from "../config.js";
 import {
@@ -22,12 +22,17 @@ function actorFromCtx(ctx: Context): ActorInput | null {
   };
 }
 
-function createApi(bot: Bot): PostPublishingApi {
+export function createPostPublishingApi(bot: Bot): PostPublishingApi {
   return {
     async getChannelTitle(channelId: number): Promise<string> {
       const chat = await bot.api.getChat(channelId);
-      if ("title" in chat && chat.title) return chat.title;
-      return String(channelId);
+      const title = "title" in chat && chat.title ? chat.title : String(channelId);
+      return channelId === config.postTestChannelId ? `🧪 Тест: ${title}` : title;
+    },
+
+    async resolveChannelId(username: string): Promise<number> {
+      const chat = await bot.api.getChat(`@${username}`);
+      return chat.id;
     },
 
     async sendText(
@@ -51,6 +56,23 @@ function createApi(bot: Bot): PostPublishingApi {
       });
     },
 
+    async attachButtons(channelId: number, messageId: number, replyMarkup: unknown): Promise<void> {
+      try {
+        await bot.api.editMessageReplyMarkup(channelId, messageId, {
+          reply_markup: replyMarkup as InlineKeyboardMarkup,
+        });
+      } catch (err) {
+        // Same buttons are already attached: nothing to change, treat as success.
+        if (err instanceof GrammyError && err.description.includes("message is not modified")) return;
+        console.error("[post] attachButtons failed", {
+          channelId,
+          messageId,
+          error: err instanceof GrammyError ? err.description : String(err),
+        });
+        throw err;
+      }
+    },
+
     async answerCallback(callbackQueryId: string): Promise<void> {
       await bot.api.answerCallbackQuery(callbackQueryId);
     },
@@ -61,13 +83,13 @@ export function registerPostPublishing(bot: Bot): void {
   const store = new RedisPostDraftStore();
   const channelIds = [
     config.channelId,
-    ...(config.secondaryChannelId !== undefined ? [config.secondaryChannelId] : []),
+    ...(config.postTestChannelId !== undefined ? [config.postTestChannelId] : []),
   ];
   const flow = new PostPublishingFlow({
     ownerId: config.adminLogChatId,
     channelIds,
     store,
-    api: createApi(bot),
+    api: createPostPublishingApi(bot),
   });
 
   bot.command("post", async (ctx) => {
@@ -105,12 +127,17 @@ export function registerPostPublishing(bot: Bot): void {
       return;
     }
 
+    const origin = msg.forward_origin;
     const input: MessageInput = {
       ...actor,
       messageId: msg.message_id,
-      photo: Boolean(msg.photo) && !msg.media_group_id,
-      caption: msg.caption,
       text: msg.text,
+      forwardedFrom:
+        origin?.type === "channel"
+          ? { channelId: origin.chat.id, messageId: origin.message_id }
+          : undefined,
+      forwardedFromNonChannel: origin !== undefined && origin.type !== "channel",
+      mediaGroup: Boolean(msg.media_group_id),
     };
 
     const consumed = await flow.handleMessage(input);

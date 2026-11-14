@@ -80,7 +80,7 @@ Copy [`.env.example`](.env.example) to `.env` and fill in:
 | `TELEGRAM_BOT_TOKEN` | From BotFather |
 | `TELEGRAM_WEBHOOK_SECRET` | Random secret (`openssl rand -hex 32`) |
 | `CHANNEL_ID` | Parent channel ID (`-100…`) — moderation + `/post` |
-| `SECONDARY_CHANNEL_ID` | Optional second channel for `/post` only |
+| `POST_TEST_CHANNEL_ID` | Optional test channel for `/post` |
 | `CHAT_ID` | Linked discussion supergroup ID |
 | `MODERATION_CHAT_ID` | Moderator supergroup for cards and ban logs |
 | `ADMIN_LOG_CHAT_ID` | Owner user ID (private commands + error logs) |
@@ -126,19 +126,21 @@ Then open `https://<your-domain>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>` once. 
 | `/limits_reset`, `/limits_reset_all` | Owner | Reset LLM quotas |
 | `/clear_react_leave <user_id>` | Owner | Clear “Keep” immunity |
 | `/ignore_channel`, `/ignore_channel_remove`, `/ignore_channel_list` | Owner | Channel reaction allowlist |
-| `/post` | Owner (private DM only) | Photo post wizard with URL buttons → selected channel |
+| `/post` | Owner (private DM only) | Attach URL buttons to your own channel post |
 | `/cancel` | Owner (private DM only) | Cancel an active post draft |
 | `/unban <user_id>` | Owner or channel/discussion admins | Unban in discussion + channel |
 
 ### Inline post publishing (`/post`)
 
-Available only to the owner (`ADMIN_LOG_CHAT_ID`) in a **private chat** with the bot. The bot must be a channel admin with permission to **post messages** in `CHANNEL_ID` and, if set, `SECONDARY_CHANNEL_ID`.
+Available only to the owner (`ADMIN_LOG_CHAT_ID`) in a **private chat** with the bot. The bot must be a channel admin with permission to **edit messages** in `CHANNEL_ID` and, if set, `POST_TEST_CHANNEL_ID`.
 
-1. Send `/post` — bot shows configured channel(s) for selection.
-2. Send **one photo with a non-empty caption** (albums and text-only posts are not supported).
+Bots cannot send Premium custom emoji to channels unless they own a Fragment username, so the bot never re-sends the post. You publish it yourself and the bot only attaches the buttons (`editMessageReplyMarkup`), which keeps the caption and its custom emoji intact.
+
+1. Publish the post in the channel from your own account.
+2. Send `/post` to the bot, then **forward that post** to it or send its link (`https://t.me/c/…/123`). Albums are not supported (Telegram does not allow buttons on them).
 3. Enter button label and URL (`http` or `https`) — repeat for more buttons, or finish.
-4. Review the preview (photo + caption + inline URL buttons, one button per row).
-5. Tap **Publish** to copy the post into the selected channel, or **Cancel** to discard the draft.
+4. Review the preview (a copy of the post with buttons, sent to your DM).
+5. Tap **Publish** to attach the buttons to the channel post, or **Cancel** to discard the draft. Publishing again replaces the post's buttons.
 
 `/cancel` aborts the wizard at any step. A new `/post` replaces an unfinished draft. Drafts expire after 24 hours of inactivity.
 

@@ -5,6 +5,7 @@ import {
   DRAFT_TTL_SECONDS,
   buildPostKeyboard,
   isHttpUrl,
+  parsePostLink,
   type PostDraft,
 } from "../../src/post-publishing/draft.js";
 import { RedisPostDraftStore } from "../../src/post-publishing/store.js";
@@ -20,6 +21,27 @@ test("accepts only absolute http and https URLs", () => {
   assert.equal(isHttpUrl("http://example.com"), true);
   assert.equal(isHttpUrl("tg://resolve?domain=test"), false);
   assert.equal(isHttpUrl("example.com"), false);
+});
+
+test("parses private and public Telegram post links", () => {
+  assert.deepEqual(parsePostLink("https://t.me/c/3908886812/2"), {
+    kind: "private",
+    channelId: -1003908886812,
+    messageId: 2,
+  });
+  assert.deepEqual(parsePostLink(" t.me/c/3908886812/2?single "), {
+    kind: "private",
+    channelId: -1003908886812,
+    messageId: 2,
+  });
+  assert.deepEqual(parsePostLink("https://t.me/sleepy_corner/15"), {
+    kind: "public",
+    username: "sleepy_corner",
+    messageId: 15,
+  });
+  assert.equal(parsePostLink("https://t.me/sleepy_corner"), null);
+  assert.equal(parsePostLink("https://example.com/c/1/2"), null);
+  assert.equal(parsePostLink("hello"), null);
 });
 
 test("puts every URL button on a separate row", () => {
@@ -70,6 +92,13 @@ test("treats missing and malformed Redis values as no draft", async () => {
   get.mock.mockImplementationOnce(async () => "not-json");
   assert.equal(await store.get(9), null);
   get.mock.mockImplementationOnce(async () => 123);
+  assert.equal(await store.get(9), null);
+});
+
+test("ignores drafts from the old copy-based wizard", async () => {
+  const get = mock.fn(async () => ({ step: "select_channel", channelId: -100123, buttons: [] }) as unknown);
+  const store = new RedisPostDraftStore({ get } as unknown as Redis);
+
   assert.equal(await store.get(9), null);
 });
 
