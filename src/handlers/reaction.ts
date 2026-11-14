@@ -1,19 +1,21 @@
 import type { Bot } from "grammy";
 import { GrammyError } from "grammy";
 import { config } from "../config.js";
+import { escapeHtml, logError } from "../logger.js";
 import {
-  discussionPostPublicLink,
-  escapeHtml,
-  formatActorChatHtml,
-  logError,
-  logInfo,
-} from "../logger.js";
+  buildChannelCardHtml,
+  CHANNEL_CARD_TTL_SEC,
+  channelCardKeyboard,
+  channelCardResultHtml,
+  parseChannelCardCallback,
+} from "../channel-reaction-card.js";
+import { getRedis } from "../redis.js";
 import {
   buildPendingModerationText,
   buildReactionWarningHtml,
   pendingModerationKeyboard,
 } from "../moderation-card.js";
-import { isChannelIgnored } from "../ignored-channels.js";
+import { addIgnoredChannel, isChannelIgnored } from "../ignored-channels.js";
 import { computeRisk, hasSpamNickname, isAdminAnywhere } from "../moderation.js";
 import { executeReactionBan } from "../post-ban.js";
 import {
@@ -54,7 +56,74 @@ function shouldProcessReactionChange(
   return reactionSetSignature(newR) !== reactionSetSignature(oldR);
 }
 
+/** Reactions on behalf of these chats are never moderated or reported. */
+export function isTrustedActorChat(
+  actorChatId: number,
+  own: { channelId: number; chatId: number },
+): boolean {
+  return actorChatId === own.channelId || actorChatId === own.chatId;
+}
+
+function errorText(err: unknown): string {
+  if (err instanceof GrammyError) return err.description;
+  return err instanceof Error ? err.message : String(err);
+}
+
+const channelCardKey = (channelId: number) => `anoncard:${channelId}`;
+
 export function registerReactionHandler(bot: Bot): void {
+  // Ban / Keep under a channel-reaction card (moderation chat only — scope middleware).
+  // Registered before registerModerationCallbacks, whose catch-all would swallow it.
+  bot.callbackQuery(/^ac:[bk]:-\d+$/, async (ctx) => {
+    const parsed = parseChannelCardCallback(ctx.callbackQuery.data);
+    const msg = ctx.callbackQuery.message;
+    if (!parsed || !msg) {
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+    const { action, channelId } = parsed;
+    await ctx.answerCallbackQuery({ text: action === "ban" ? "Баню канал…" : "Оставляю" }).catch(() => {});
+
+    const errors: string[] = [];
+    if (action === "ban") {
+      try {
+        // A channel acting in the group is a *sender chat*: banChatMember rejects it with
+        // "invalid user_id specified"; banChatSenderChat is the right method.
+        await ctx.api.banChatSenderChat(config.chatId, channelId);
+      } catch (err) {
+        errors.push(`бан не прошёл: ${errorText(err)}`);
+      }
+      try {
+        await ctx.api.deleteAllMessageReactionsChat(config.chatId, channelId);
+      } catch (err) {
+        errors.push(`реакции не сняты: ${errorText(err)}`);
+      }
+    } else {
+      try {
+        await addIgnoredChannel(channelId);
+      } catch (err) {
+        errors.push(`не добавлен в ignore-list: ${errorText(err)}`);
+      }
+    }
+    await getRedis().del(channelCardKey(channelId)).catch(() => {});
+
+    const original = "text" in msg && msg.text ? escapeHtml(msg.text) : "";
+    try {
+      await ctx.api.editMessageText(
+        msg.chat.id,
+        msg.message_id,
+        `${original ? original + "\n\n" : ""}${channelCardResultHtml(action, ctx.from, channelId, errors)}`,
+        {
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
+          reply_markup: { inline_keyboard: [] },
+        },
+      );
+    } catch (err) {
+      console.error("[channel-card] edit failed", err);
+    }
+  });
+
   bot.on("message_reaction", async (ctx) => {
     const update = ctx.messageReaction;
     const { user, actor_chat, new_reaction, old_reaction, chat, message_id } = update;
@@ -67,43 +136,39 @@ export function registerReactionHandler(bot: Bot): void {
 
     if (!user) {
       if (actor_chat) {
-        const msgUrl = discussionPostPublicLink(config.chatId, message_id);
-        const em = reactionEmojis(new_reaction).map(escapeHtml).join(" ");
-        const actorLine = formatActorChatHtml(actor_chat);
-        const msgLink = `<a href="${escapeHtml(msgUrl)}">сообщение ${message_id}</a>`;
+        // Our own channel, the chat itself (anonymous admins) and ignore-listed channels
+        // may react freely: no action and no notice.
+        const trusted = isTrustedActorChat(actor_chat.id, {
+          channelId: config.channelId,
+          chatId: config.chatId,
+        });
+        if (trusted || (await isChannelIgnored(actor_chat.id))) return;
 
-        let banLine: string;
-        if (actor_chat.id === config.channelId) {
-          banLine =
-            "\n\n<b>Исключение из обсуждения:</b> не выполнялось — это привязанный канал (реакция от его имени).";
-        } else if (actor_chat.id === config.chatId) {
-          banLine =
-            "\n\n<b>Исключение из обсуждения:</b> не выполнялось — источник совпадает с чатом обсуждения.";
-        } else if (await isChannelIgnored(actor_chat.id)) {
-          banLine =
-            "\n\n<b>Исключение из обсуждения:</b> не выполнялось — канал в ignore-list (см. /ignore_channel_list).";
-        } else {
-          try {
-            await ctx.api.banChatMember(config.chatId, actor_chat.id, { revoke_messages: true });
-            banLine = "\n\n<b>Исключение из обсуждения:</b> выполнено (<code>banChatMember</code>).";
-          } catch (err) {
-            const desc =
-              err instanceof GrammyError
-                ? err.description
-                : err instanceof Error
-                  ? err.message
-                  : String(err);
-            banLine =
-              `\n\n<b>Исключение из обсуждения:</b> API не дал — <code>${escapeHtml(desc)}</code>. ` +
-              "Можно вручную ограничить участника по ссылке на чат выше (если это канал в группе — через список участников).";
-          }
+        // Any other channel: no automatic action, moderators decide via a card.
+        // One open card per channel, so a busy channel can't flood the moderation chat.
+        try {
+          const fresh = await getRedis().set(channelCardKey(actor_chat.id), "1", {
+            nx: true,
+            ex: CHANNEL_CARD_TTL_SEC,
+          });
+          if (fresh !== "OK") return;
+          await ctx.api.sendMessage(
+            config.moderationChatId,
+            buildChannelCardHtml({
+              actorChat: actor_chat,
+              chatId: config.chatId,
+              messageId: message_id,
+              emojis: reactionEmojis(new_reaction),
+            }),
+            {
+              parse_mode: "HTML",
+              link_preview_options: { is_disabled: true },
+              reply_markup: channelCardKeyboard(actor_chat.id),
+            },
+          );
+        } catch (err) {
+          await logError(ctx.api, `карточка реакции канала ${actor_chat.id}`, err);
         }
-
-        await logInfo(
-          ctx.api,
-          `ℹ️ <b>Анонимная реакция</b> ${em ? `(${em}) ` : ""}на ${msgLink}\n\n` +
-            `<b>От чьего имени:</b> ${actorLine}.${banLine}`,
-        );
       }
       return;
     }
