@@ -20,8 +20,9 @@ export function getBot(): Bot {
     registerCommands(botInstance);
     registerPostPublishing(botInstance);
     registerReactionHandler(botInstance);
-    registerModerationCallbacks(botInstance);
+    // До registerModerationCallbacks: там catch-all callback_query, он съел бы кнопку «Забанить» журнала.
     registerJoinLog(botInstance);
+    registerModerationCallbacks(botInstance);
     // LLM-режим регистрируется ПОСЛЕ команд: команды типа /ping /status уже
     // отработали и вернули, а оставшиеся message:text попадут сюда.
     registerChatHandler(botInstance);

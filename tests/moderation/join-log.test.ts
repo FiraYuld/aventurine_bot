@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ChatMember, User } from "grammy/types";
-import { buildJoinLogHtml, findHints, isJoin } from "../../src/join-log.js";
+import {
+  buildJoinLogHtml,
+  findHints,
+  isBan,
+  isJoin,
+  joinBanCallbackData,
+  parseJoinBanCallback,
+} from "../../src/join-log.js";
 
 const user: User = { id: 777, is_bot: false, first_name: "Paris", last_name: "Ow-Yang" };
 
@@ -45,8 +52,20 @@ test("log entry shows id, profile channel and hints, HTML-escaped", () => {
   assert.match(html, /Также в канале: да/);
   assert.match(html, /Канал в профиле: Сливы 18\+ · @hot_chan/);
   assert.match(html, /Признаки: 18\+/);
-  // No clickable links to the spam account or its channel.
-  assert.doesNotMatch(html, /href=|tg:\/\/|t\.me/);
+  // One-tap profile link for moderators.
+  assert.match(html, /<a href="tg:\/\/user\?id=777">&lt;b&gt;Paris&lt;\/b&gt; Ow-Yang<\/a>/);
+});
+
+test("ban detection and join-log button callback", () => {
+  assert.equal(isBan(member, kicked), true);
+  assert.equal(isBan(left, kicked), true, "ban of someone who already left");
+  assert.equal(isBan(kicked, kicked), false);
+  assert.equal(isBan(member, left), false, "voluntary leave");
+
+  assert.equal(joinBanCallbackData(777), "j:b:777");
+  assert.equal(parseJoinBanCallback("j:b:777"), 777);
+  assert.equal(parseJoinBanCallback("b:777:1"), null);
+  assert.equal(parseJoinBanCallback("j:b:-5"), null);
 });
 
 test("unreadable profile is reported, not hidden", () => {

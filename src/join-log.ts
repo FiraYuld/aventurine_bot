@@ -1,5 +1,27 @@
+import { InlineKeyboard } from "grammy";
 import type { ChatMember, User } from "grammy/types";
 import { escapeHtml } from "./logger.js";
+
+/** callback_data of the join-log Ban button: `j:b:<userId>`. */
+export function joinBanCallbackData(userId: number): string {
+  return `j:b:${userId}`;
+}
+
+export function parseJoinBanCallback(data: string): number | null {
+  const m = /^j:b:(\d+)$/.exec(data);
+  if (!m) return null;
+  const id = Number(m[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+export function joinLogKeyboard(userId: number): InlineKeyboard {
+  return new InlineKeyboard().text("🔨 Забанить", joinBanCallbackData(userId));
+}
+
+/** True when the update moves the user from "not banned" to "banned" (kicked). */
+export function isBan(oldMember: ChatMember, newMember: ChatMember): boolean {
+  return oldMember.status !== "kicked" && newMember.status === "kicked";
+}
 
 /**
  * Join log (observation mode): every join to the discussion chat or the channel is
@@ -82,8 +104,9 @@ export function buildJoinLogHtml(info: JoinLogInfo): string {
   const where = info.place === "chat" ? "в чат" : "в канал";
   lines.push(`👤 <b>Вход ${where}</b> «${escapeHtml(info.placeTitle)}»`);
   lines.push("");
+  // Profile link, so moderators can open the account in one tap.
   lines.push(
-    `Имя: ${escapeHtml(name)}` +
+    `Имя: <a href="tg://user?id=${u.id}">${escapeHtml(name)}</a>` +
       (u.username ? ` · @${escapeHtml(u.username)}` : " · без username") +
       (u.is_bot ? " · <b>бот</b>" : "") +
       (u.is_premium ? " · premium" : ""),
