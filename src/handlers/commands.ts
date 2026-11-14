@@ -27,7 +27,7 @@ function isOwner(userId: number): boolean {
   return isOwnerUserId(userId);
 }
 
-const HELP_TEXT = `
+export const HELP_TEXT = `
 <b>Авантюрин</b> — модератор реакций.
 
 Что я делаю:
@@ -46,6 +46,8 @@ const HELP_TEXT = `
 /ignore_channel &lt;id|@username&gt; — только владелец: добавить канал в ignore-list (его реакции не считаются спамом).
 /ignore_channel_remove &lt;id|@username&gt; — только владелец: убрать канал из ignore-list.
 /ignore_channel_list — только владелец: показать ignore-list.
+/post — только владелец: добавить URL-кнопки к своему посту в канале (переслать пост или прислать ссылку).
+/cancel — только владелец: отменить активный черновик публикации.
 /unban — владелец или администраторы канала/чата обсуждения.
 `.trim();
 

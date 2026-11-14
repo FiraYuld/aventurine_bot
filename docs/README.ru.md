@@ -168,6 +168,7 @@ vercel link
 vercel env add TELEGRAM_BOT_TOKEN production
 vercel env add TELEGRAM_WEBHOOK_SECRET production
 vercel env add CHANNEL_ID production
+vercel env add POST_TEST_CHANNEL_ID production   # опционально: тестовый канал для /post
 vercel env add CHAT_ID production
 vercel env add ADMIN_LOG_CHAT_ID production
 vercel env add MODERATION_CHAT_ID production
@@ -217,7 +218,25 @@ https://<твой-домен>/api/setup?key=<TELEGRAM_WEBHOOK_SECRET>
 (см. `src/middleware/scope.ts`).
 
 - `/start`, `/help`, `/ping`, `/status` — только пользователь с ID = `ADMIN_LOG_CHAT_ID`.
+- `/limits [@username]`, `/limits_reset`, `/limits_reset_all` — только владелец: LLM-лимиты.
+- `/clear_react_leave <user_id>`, `/ignore_channel*`, `/ignore_channel_list` — только владелец.
+- `/post` — только владелец, **только в личке**: добавить URL-кнопки к своему посту в канале (`CHANNEL_ID` или тестовый `POST_TEST_CHANNEL_ID`).
+- `/cancel` — только владелец, **только в личке**: отменить активный черновик публикации.
 - `/unban <user_id>` — владелец или администраторы канала и чата обсуждения.
+
+### Публикация постов с inline-кнопками (`/post`)
+
+Доступна только владельцу (`ADMIN_LOG_CHAT_ID`) в **личном чате** с ботом. Бот должен быть администратором каналов `CHANNEL_ID` и (если задан) `POST_TEST_CHANNEL_ID` с правом **редактировать сообщения**.
+
+Боты не могут отправлять в каналы премиум-эмодзи (только с купленным на Fragment юзернеймом), поэтому бот не пересоздаёт пост: его публикуешь ты сам, а бот только прикрепляет кнопки (`editMessageReplyMarkup`). Подпись и премиум-эмодзи при этом не трогаются.
+
+1. Опубликуй пост в канале со своего аккаунта.
+2. `/post` боту, затем **перешли ему этот пост** или пришли ссылку (`https://t.me/c/…/123`). Альбомы не поддерживаются — Telegram не даёт вешать на них кнопки.
+3. Текст кнопки и URL (`http` или `https`); можно добавить несколько кнопок — каждая на отдельной строке.
+4. Превью: копия поста с кнопками в личке; под ним «Опубликовать» / «Отмена».
+5. «Опубликовать» прикрепляет кнопки к посту в канале; «Отмена» или `/cancel` удаляет черновик. Повторная публикация заменяет кнопки поста.
+
+Повторный `/post` сбрасывает незавершённый черновик. Черновик живёт 24 часа с последнего шага.
 
 ---
 

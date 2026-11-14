@@ -3,6 +3,7 @@ import { getConfig } from "./config.js";
 import { registerReactionHandler } from "./handlers/reaction.js";
 import { registerModerationCallbacks } from "./handlers/moderation-callbacks.js";
 import { registerCommands } from "./handlers/commands.js";
+import { registerPostPublishing } from "./handlers/post-publishing.js";
 import { registerChatHandler } from "./chat/handler.js";
 import { scopeMiddleware } from "./middleware/scope.js";
 
@@ -16,6 +17,7 @@ export function getBot(): Bot {
     botInstance.use(scopeMiddleware);
     // Команды регистрируются ПЕРВЫМИ, чтобы не уходить в LLM-хендлер.
     registerCommands(botInstance);
+    registerPostPublishing(botInstance);
     registerReactionHandler(botInstance);
     registerModerationCallbacks(botInstance);
     // LLM-режим регистрируется ПОСЛЕ команд: команды типа /ping /status уже
