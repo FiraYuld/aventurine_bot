@@ -1,8 +1,10 @@
 import type { Api } from "grammy";
 import type { User } from "grammy/types";
+import { NOT_WIPED_LINE, wipeKeyboard } from "./ban-cleanup.js";
+import { rememberJoinLog } from "./ban-cleanup-store.js";
 import { config } from "./config.js";
-import { buildBanLogHtml, logBan, logError, type ReactionEventLog } from "./logger.js";
-import { banEverywhere, deleteAllReactionsOf } from "./moderation.js";
+import { buildBanLogHtml, logError, type ReactionEventLog } from "./logger.js";
+import { banEverywhere } from "./moderation.js";
 
 export const BAN_CATCHPHRASE = "Схватил бота за жёпу!";
 
@@ -10,8 +12,7 @@ export type BanLogTitle =
   | "Бан по реакции"
   | "Бан по кнопке"
   | "Автобан"
-  | "Автобан (спам-ник)"
-  | "Бан бот-аккаунт";
+  | "Автобан (спам-ник)";
 
 export async function sendBanCatchphraseReply(
   api: Api,
@@ -22,35 +23,35 @@ export async function sendBanCatchphraseReply(
   });
 }
 
+/**
+ * Ban log in the moderation chat, with the "🧹 Удалить сообщения и реакции" button.
+ * Returns the id of the message carrying the button (new or edited card).
+ */
 async function sendOrEditBanLog(
   api: Api,
-  user: User,
-  reasons: string[],
-  extra: {
-    messageId?: number;
-    reactionEmojis?: string[];
-    reactionEvents?: ReactionEventLog[];
-    title?: string;
-  },
-  replaceInModeration?: { messageId: number },
-): Promise<void> {
-  const text = buildBanLogHtml(user, reasons, extra);
-  if (replaceInModeration) {
-    await api.editMessageText(
-      config.moderationChatId,
-      replaceInModeration.messageId,
-      text,
-      {
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-        reply_markup: { inline_keyboard: [] },
-      },
-    );
-  } else {
-    await logBan(api, user, reasons, extra);
+  userId: number,
+  html: string,
+  replaceModerationMessageId?: number,
+): Promise<number> {
+  const other = {
+    parse_mode: "HTML" as const,
+    link_preview_options: { is_disabled: true },
+    reply_markup: wipeKeyboard(userId),
+  };
+  if (replaceModerationMessageId !== undefined) {
+    await api.editMessageText(config.moderationChatId, replaceModerationMessageId, html, other);
+    return replaceModerationMessageId;
   }
+  const sent = await api.sendMessage(config.moderationChatId, html, other);
+  return sent.message_id;
 }
 
+/**
+ * Ban after reactions (autoban, spam nickname, or the Ban button on a reaction card).
+ * Bans in the chat and the channel but does NOT delete the user's messages or
+ * reactions: real people were banned by mistake and lost everything. Deleting is the
+ * separate "🧹" step under the ban log.
+ */
 export async function executeReactionBan(params: {
   api: Api;
   user: User;
@@ -64,33 +65,27 @@ export async function executeReactionBan(params: {
   replaceModerationMessageId?: number;
 }): Promise<{ errors: string[] }> {
   const outcome = await banEverywhere(params.api, params.userId);
-  await sendOrEditBanLog(
-    params.api,
-    params.user,
-    params.reasons,
-    {
+
+  const html =
+    buildBanLogHtml(params.user, params.reasons, {
       messageId: params.discussionMessageId,
       reactionEmojis: params.reactionEmojis,
       reactionEvents: params.reactionEvents,
       title: params.logTitle,
-    },
-    params.replaceModerationMessageId !== undefined
-      ? { messageId: params.replaceModerationMessageId }
-      : undefined,
-  );
-  // Bot API 10.0: чистим оставленные забаненным пользователем реакции.
-  // Если бан в чате не прошёл — звать метод бессмысленно (всё равно прав не
-  // хватит / реакции не наши). Ошибки самой чистки не аффектят бан-флоу.
-  if (outcome.bannedInChat) {
-    const wipe = await deleteAllReactionsOf(params.api, params.userId);
-    if (!wipe.ok) {
-      await logError(
-        params.api,
-        `снятие реакций после бана у ${params.userId}`,
-        wipe.error ?? "unknown error",
-      );
-    }
+    }) + `\n\n${NOT_WIPED_LINE}`;
+
+  try {
+    const logMessageId = await sendOrEditBanLog(
+      params.api,
+      params.userId,
+      html,
+      params.replaceModerationMessageId,
+    );
+    await rememberJoinLog(params.userId, logMessageId, html);
+  } catch (err) {
+    console.error("Не удалось отправить лог бана в чат модерации:", err);
   }
+
   try {
     await sendBanCatchphraseReply(params.api, params.discussionMessageId);
   } catch (err) {

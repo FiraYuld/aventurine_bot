@@ -1,5 +1,6 @@
 import { getBot, ALLOWED_UPDATES } from "../src/bot.js";
 import { getConfig } from "../src/config.js";
+import { isValidSetupKey, setupKeyFromHeaders } from "../src/setup-auth.js";
 
 interface SetupResult {
   ok: boolean;
@@ -34,9 +35,21 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   const url = new URL(request.url);
-  const key = url.searchParams.get("key");
 
-  if (key !== cfg.webhookSecret) {
+  if (url.searchParams.has("key")) {
+    // The old ?key= form leaked the secret into request logs. Refuse it explicitly.
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        message:
+          "Секрет в адресе больше не принимается. Передайте его заголовком: " +
+          "curl -H 'Authorization: Bearer <TELEGRAM_WEBHOOK_SECRET>' https://<домен>/api/setup",
+      }),
+      { status: 400, headers: { "content-type": "application/json; charset=utf-8" } },
+    );
+  }
+
+  if (!isValidSetupKey(setupKeyFromHeaders(request.headers), cfg.webhookSecret)) {
     return new Response(JSON.stringify({ ok: false, message: "Forbidden" }), {
       status: 403,
       headers: { "content-type": "application/json" },

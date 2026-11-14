@@ -96,7 +96,7 @@ function whoHtml(by?: User): string {
   return ` (${escapeHtml(name)})`;
 }
 
-const NOT_WIPED_LINE = "Сообщения и реакции не тронуты — удалить можно кнопкой ниже.";
+export const NOT_WIPED_LINE = "Сообщения и реакции не тронуты — удалить можно кнопкой ниже.";
 
 export function bannedFooterHtml(by?: User): string {
   return `🔨 <b>Забанен</b>${whoHtml(by)}: удалён из чата и канала.\n${NOT_WIPED_LINE}`;

@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "tsx --test \"tests/**/*.test.ts\"",
     "local": "vercel dev",
     "deploy": "vercel --prod",
     "analysis:stats": "node --env-file=.env --import tsx tools/chat-analysis/01-parse-stats.ts",

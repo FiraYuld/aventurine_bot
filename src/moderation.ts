@@ -126,7 +126,8 @@ export async function banEverywhere(api: Api, userId: number): Promise<BanOutcom
   };
 
   try {
-    await api.banChatMember(config.chatId, userId, { revoke_messages: true });
+    // No revoke_messages: deleting the user's messages is a separate, confirmed step (🧹).
+    await api.banChatMember(config.chatId, userId);
     outcome.bannedInChat = true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -142,39 +143,6 @@ export async function banEverywhere(api: Api, userId: number): Promise<BanOutcom
   }
 
   return outcome;
-}
-
-export interface ReactionWipeResult {
-  ok: boolean;
-  error?: string;
-}
-
-export async function deleteAllReactionsOf(
-  api: Api,
-  userId: number,
-): Promise<ReactionWipeResult> {
-  try {
-    // Bot API 10.0, typed since grammY 1.46.
-    await api.deleteAllMessageReactionsUser(config.chatId, userId);
-    return { ok: true };
-  } catch (err) {
-    if (err instanceof GrammyError) {
-      const desc = err.description ?? "";
-      // 404 / "method not found" → регион ещё не обновлён до Bot API 10.0.
-      // Для нас это не повод поднимать тревогу — возвращаем ok:false с
-      // понятной формулировкой, вызывающая сторона сама решит, как залогать.
-      if (
-        err.error_code === 404 ||
-        /method.*not.*found/i.test(desc) ||
-        /unknown method/i.test(desc)
-      ) {
-        return { ok: false, error: `метод недоступен: ${desc || err.message}` };
-      }
-      return { ok: false, error: desc || err.message };
-    }
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg };
-  }
 }
 
 export { PRIVILEGED_STATUSES };

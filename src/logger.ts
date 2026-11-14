@@ -114,28 +114,6 @@ export function buildBanLogHtml(
   );
 }
 
-export async function logBan(
-  api: Api,
-  user: User,
-  reasons: string[],
-  extra?: {
-    messageId?: number;
-    reactionEmojis?: string[];
-    reactionEvents?: ReactionEventLog[];
-    title?: string;
-  },
-): Promise<void> {
-  const text = buildBanLogHtml(user, reasons, extra);
-
-  try {
-    await api.sendMessage(config.moderationChatId, text, {
-      parse_mode: "HTML",
-      link_preview_options: { is_disabled: true },
-    });
-  } catch (err) {
-    console.error("Не удалось отправить лог в чат модерации:", err);
-  }
-}
 
 export async function logError(
   api: Api,
