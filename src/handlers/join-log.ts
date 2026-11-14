@@ -5,7 +5,9 @@ import {
   CLEANUP_DEDUPE_TTL_SEC,
   JOIN_LOG_TTL_SEC,
   JOIN_MESSAGE_TTL_SEC,
-  runBanCleanup,
+  parseWipeCallback,
+  runBanFollowUp,
+  runWipe,
   type CleanupStore,
 } from "../ban-cleanup.js";
 import {
@@ -96,6 +98,21 @@ export function createCleanupStore(): CleanupStore {
       }
       return null;
     },
+    async setJoinLog(userId, entry) {
+      await rememberJoinLog(userId, entry.messageId, entry.html);
+    },
+  };
+}
+
+function cleanupDeps(api: Api) {
+  return {
+    api,
+    store: createCleanupStore(),
+    targets: {
+      chatId: config.chatId,
+      channelId: config.channelId,
+      moderationChatId: config.moderationChatId,
+    },
   };
 }
 
@@ -111,22 +128,11 @@ async function rememberJoinLog(userId: number, messageId: number, html: string):
   });
 }
 
-async function cleanupAfterBan(api: Api, userId: number, by?: User): Promise<void> {
-  const result = await runBanCleanup(
-    {
-      api,
-      store: createCleanupStore(),
-      targets: {
-        chatId: config.chatId,
-        channelId: config.channelId,
-        moderationChatId: config.moderationChatId,
-      },
-    },
-    userId,
-    by,
-  );
+/** Step 1 after a ban: reversible (ban in both places, join message, mark + wipe button). */
+async function followUpAfterBan(api: Api, userId: number, opts: { by?: User; user?: User }): Promise<void> {
+  const result = await runBanFollowUp(cleanupDeps(api), userId, opts);
   if (result.ran && result.errors.length > 0) {
-    await logError(api, `очистка после бана ${userId}`, result.errors.join("; "));
+    await logError(api, `действия после бана ${userId}`, result.errors.join("; "));
   }
 }
 
@@ -154,13 +160,15 @@ export function registerJoinLog(bot: Bot): void {
     if (!place) return;
     const user = upd.new_chat_member.user;
 
-    // Banned by anyone (our button, Iris, manual, autoban): finish the job everywhere.
+    // Banned by someone else (Iris, a moderator by hand): ban in both places, offer the wipe.
+    // Bans made by this bot are skipped: the reaction flow logs its own bans, and the
+    // join-log button runs the follow-up itself.
     if (isBan(upd.old_chat_member, upd.new_chat_member)) {
-      const by = upd.from.id === ctx.me.id ? undefined : upd.from;
+      if (upd.from.id === ctx.me.id) return;
       try {
-        await cleanupAfterBan(ctx.api, user.id, by);
+        await followUpAfterBan(ctx.api, user.id, { by: upd.from, user });
       } catch (err) {
-        console.error("[join-log] cleanup failed", { userId: user.id, err });
+        console.error("[join-log] follow-up failed", { userId: user.id, err });
       }
       return;
     }
@@ -208,9 +216,27 @@ export function registerJoinLog(bot: Bot): void {
     }
     await ctx.answerCallbackQuery({ text: "Баню…" }).catch(() => {});
     try {
-      await cleanupAfterBan(ctx.api, userId, ctx.from);
+      await followUpAfterBan(ctx.api, userId, { by: ctx.from });
     } catch (err) {
       await logError(ctx.api, `кнопка бана из журнала входов (${userId})`, err);
+    }
+  });
+
+  // "🧹 Удалить сообщения и реакции": the only place where a user's content is wiped.
+  bot.callbackQuery(/^j:w:\d+$/, async (ctx) => {
+    const userId = parseWipeCallback(ctx.callbackQuery.data);
+    if (userId === null) {
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Удаляю сообщения и реакции…" }).catch(() => {});
+    try {
+      const result = await runWipe(cleanupDeps(ctx.api), userId, ctx.from);
+      if (result.errors.length > 0) {
+        await logError(ctx.api, `удаление сообщений/реакций ${userId}`, result.errors.join("; "));
+      }
+    } catch (err) {
+      await logError(ctx.api, `кнопка удаления (${userId})`, err);
     }
   });
 }
