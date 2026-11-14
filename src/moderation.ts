@@ -11,14 +11,29 @@ const PRIVILEGED_STATUSES = new Set([
 
 const MEMBER_LIKE_STATUSES = new Set(["creator", "administrator", "member"]);
 
-export async function isChannelMember(api: Api, userId: number): Promise<boolean> {
+/**
+ * Telegram answers getChatMember with these descriptions when the user is simply unknown
+ * to the chat. Any other 400 ("chat not found", "member list is inaccessible", lost admin
+ * rights…) means *we* cannot check, and must never be read as "not subscribed": that would
+ * make every reactor bannable after a misconfiguration.
+ */
+const USER_NOT_IN_CHAT_RE = /user not found|participant_id_invalid|user_not_participant/i;
+
+export async function isChannelMember(
+  api: Pick<Api, "getChatMember">,
+  userId: number,
+  channelId: number = config.channelId,
+): Promise<boolean> {
   try {
-    const member = await api.getChatMember(config.channelId, userId);
+    const member = await api.getChatMember(channelId, userId);
     return MEMBER_LIKE_STATUSES.has(member.status);
   } catch (err) {
-    if (err instanceof GrammyError) {
-      // user_not_found — точно не подписан
-      if (err.error_code === 400) return false;
+    if (
+      err instanceof GrammyError &&
+      err.error_code === 400 &&
+      USER_NOT_IN_CHAT_RE.test(err.description)
+    ) {
+      return false;
     }
     throw err;
   }

@@ -16,6 +16,7 @@ import {
   getReactionModSession,
   type ReactionModSession,
   setReactionLeaveAlone,
+  withReactionUserLock,
 } from "../reaction-mod-session.js";
 
 async function safeAnswer(
@@ -71,36 +72,39 @@ export function registerModerationCallbacks(bot: Bot): void {
     }
 
     const modMessageId = msg.message_id;
-    const session = await getReactionModSession(userId);
+    // Same per-user lock as the reaction handler: a button press must not race a new reaction.
+    await withReactionUserLock(userId, async () => {
+      const session = await getReactionModSession(userId);
 
-    // Если есть АКТУАЛЬНАЯ сессия для другой (более свежей) карточки —
-    // не даём действовать со старой, чтобы поведение не размазывалось.
-    // А вот «нет сессии» = всё ок, идём в stale-path: решение модератора важнее.
-    if (session && session.moderationMessageId !== modMessageId) {
-      await safeAnswer(ctx, {
-        text: "Есть свежая карточка для этого юзера — действуй там.",
-      });
-      return;
-    }
-
-    if (kind === "k") {
-      if (session) {
-        await handleKeepFresh(ctx, { session, userId, modMessageId });
-      } else {
-        await handleKeepStale(ctx, { userId, modMessageId });
+      // Если есть АКТУАЛЬНАЯ сессия для другой (более свежей) карточки —
+      // не даём действовать со старой, чтобы поведение не размазывалось.
+      // А вот «нет сессии» = всё ок, идём в stale-path: решение модератора важнее.
+      if (session && session.moderationMessageId !== modMessageId) {
+        await safeAnswer(ctx, {
+          text: "Есть свежая карточка для этого юзера — действуй там.",
+        });
+        return;
       }
-      return;
-    }
 
-    if (session) {
-      await handleBanFresh(ctx, { session, userId, modMessageId });
-    } else {
-      await handleBanStale(ctx, {
-        userId,
-        modMessageId,
-        discussionMessageId,
-      });
-    }
+      if (kind === "k") {
+        if (session) {
+          await handleKeepFresh(ctx, { session, userId, modMessageId });
+        } else {
+          await handleKeepStale(ctx, { userId, modMessageId });
+        }
+        return;
+      }
+
+      if (session) {
+        await handleBanFresh(ctx, { session, userId, modMessageId });
+      } else {
+        await handleBanStale(ctx, {
+          userId,
+          modMessageId,
+          discussionMessageId,
+        });
+      }
+    });
   });
 }
 
