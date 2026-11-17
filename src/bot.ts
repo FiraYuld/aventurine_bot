@@ -6,6 +6,7 @@ import { registerCommands } from "./handlers/commands.js";
 import { registerPostPublishing } from "./handlers/post-publishing.js";
 import { registerJoinLog } from "./handlers/join-log.js";
 import { registerVpnNickname } from "./handlers/vpn-nickname.js";
+import { registerTournament } from "./handlers/tournament.js";
 import { registerChatHandler } from "./chat/handler.js";
 import { scopeMiddleware } from "./middleware/scope.js";
 
@@ -17,6 +18,8 @@ export function getBot(): Bot {
     botInstance = new Bot(cfg.botToken);
     console.info(`[bot] init: env=${cfg.botEnv}`);
     botInstance.use(scopeMiddleware);
+    // Чат турниров — первым: забирает все его апдейты, остальное отдаёт дальше.
+    registerTournament(botInstance);
     // Команды регистрируются ПЕРВЫМИ, чтобы не уходить в LLM-хендлер.
     registerCommands(botInstance);
     registerPostPublishing(botInstance);

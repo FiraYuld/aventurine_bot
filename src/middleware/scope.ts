@@ -61,6 +61,7 @@ export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise
   const cm = ctx.chatMember;
   if (cm) {
     if (cm.chat.id === config.chatId || cm.chat.id === config.channelId) return next();
+    if (config.tournamentChatId !== undefined && cm.chat.id === config.tournamentChatId) return next();
     return;
   }
 
@@ -75,6 +76,11 @@ export async function scopeMiddleware(ctx: Context, next: NextFunction): Promise
 
   if (chat.type === "group" || chat.type === "supergroup") {
     if (chat.id === config.chatId || chat.id === config.moderationChatId) {
+      return next();
+    }
+    // Tournament chat: only the join log and the newcomer link guard act there
+    // (every other handler filters on config.chatId itself).
+    if (config.tournamentChatId !== undefined && chat.id === config.tournamentChatId) {
       return next();
     }
     return;

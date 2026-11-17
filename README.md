@@ -96,6 +96,7 @@ Copy [`.env.example`](.env.example) to `.env` and fill in:
 | `POST_TEST_CHANNEL_ID` | Optional test channel for `/post` |
 | `CHAT_ID` | Linked discussion supergroup ID |
 | `MODERATION_CHAT_ID` | Moderation chat for cards, join log and ban logs |
+| `TOURNAMENT_CHAT_ID` | Optional separate public group: join log + newcomer link guard (delete, mute, card) |
 | `ADMIN_LOG_CHAT_ID` | Owner user ID (private commands + error logs) |
 | `UPSTASH_REDIS_REST_URL` / `TOKEN` | Upstash REST API |
 | `LLM_API_KEY` | Optional — enables persona mode |

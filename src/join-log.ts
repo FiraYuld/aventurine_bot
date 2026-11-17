@@ -78,9 +78,9 @@ export interface PersonalChannelInfo {
 export interface JoinLogInfo {
   user: User;
   /** Where the user joined. */
-  place: "chat" | "channel";
+  place: "chat" | "channel" | "tournament";
   placeTitle: string;
-  /** Is the user also inside the other place (chat ↔ channel)? undefined = unknown. */
+  /** Is the user also inside the other place (chat ↔ channel; tournament → channel)? undefined = unknown. */
   alsoInOther?: boolean;
   viaInviteLinkName?: string;
   viaJoinRequest?: boolean;
@@ -101,7 +101,8 @@ export function buildJoinLogHtml(info: JoinLogInfo): string {
   const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim() || "(без имени)";
   const lines: string[] = [];
 
-  const where = info.place === "chat" ? "в чат" : "в канал";
+  const where =
+    info.place === "chat" ? "в чат" : info.place === "tournament" ? "в чат турниров" : "в канал";
   lines.push(`👤 <b>Вход ${where}</b> «${escapeHtml(info.placeTitle)}»`);
   lines.push("");
   // Profile link, so moderators can open the account in one tap.
@@ -120,7 +121,7 @@ export function buildJoinLogHtml(info: JoinLogInfo): string {
   if (how.length > 0) lines.push(`Как: ${how.join(", ")}`);
 
   if (info.alsoInOther !== undefined) {
-    const other = info.place === "chat" ? "канале" : "чате";
+    const other = info.place === "channel" ? "чате" : "канале";
     lines.push(`Также в ${other}: ${info.alsoInOther ? "да" : "нет"}`);
   }
 

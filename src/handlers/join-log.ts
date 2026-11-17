@@ -16,7 +16,7 @@ import { logError } from "../logger.js";
 
 const INSIDE = new Set(["creator", "administrator", "member"]);
 
-async function isInside(api: Api, chatId: number, userId: number): Promise<boolean | undefined> {
+export async function isInside(api: Api, chatId: number, userId: number): Promise<boolean | undefined> {
   try {
     const m = await api.getChatMember(chatId, userId);
     return INSIDE.has(m.status) || (m.status === "restricted" && m.is_member);
@@ -26,7 +26,7 @@ async function isInside(api: Api, chatId: number, userId: number): Promise<boole
 }
 
 /** Reads bio + linked personal channel of a user. Never throws. */
-async function readProfile(
+export async function readProfile(
   api: Api,
   user: User,
 ): Promise<Pick<JoinLogInfo, "bio" | "profileReadable" | "personalChannel">> {
@@ -82,11 +82,11 @@ export function registerJoinLog(bot: Bot): void {
     await next();
   });
 
-  bot.on("chat_member", async (ctx) => {
+  bot.on("chat_member", async (ctx, next) => {
     const upd = ctx.chatMember;
     const chatId = upd.chat.id;
     const place = chatId === config.chatId ? "chat" : chatId === config.channelId ? "channel" : null;
-    if (!place) return;
+    if (!place) return next();
     const user = upd.new_chat_member.user;
 
     // Banned by someone else (Iris, a moderator by hand): ban in both places, offer the wipe.

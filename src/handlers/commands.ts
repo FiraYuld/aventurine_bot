@@ -156,18 +156,22 @@ export function registerCommands(bot: Bot): void {
     const me = ctx.me;
     const checks: string[] = [`Бот: @${escapeHtml(me.username)} (<code>${me.id}</code>)`];
 
-    type Right = "restrict" | "edit";
+    type Right = "restrict" | "edit" | "delete";
     const targets: Array<{ label: string; id: number; needs: Right[] }> = [
       { label: "Канал", id: config.channelId, needs: ["restrict", "edit"] },
       ...(config.postTestChannelId !== undefined
         ? [{ label: "Тестовый канал", id: config.postTestChannelId, needs: ["edit"] as Right[] }]
         : []),
       { label: "Чат обсуждения", id: config.chatId, needs: ["restrict"] },
+      ...(config.tournamentChatId !== undefined
+        ? [{ label: "Чат турниров", id: config.tournamentChatId, needs: ["restrict", "delete"] as Right[] }]
+        : []),
       { label: "Чат модерации", id: config.moderationChatId, needs: [] },
     ];
     const rightLabel: Record<Right, string> = {
       restrict: "банить",
       edit: "добавлять кнопки к постам (/post)",
+      delete: "удалять сообщения",
     };
 
     for (const { label, id, needs } of targets) {
@@ -182,6 +186,9 @@ export function registerCommands(bot: Bot): void {
           edit:
             member.status === "creator" ||
             (member.status === "administrator" && member.can_edit_messages === true),
+          delete:
+            member.status === "creator" ||
+            (member.status === "administrator" && member.can_delete_messages),
         };
         const rights = needs
           .map((r) => `${rightLabel[r]}: ${has[r] ? "да" : "<b>нет</b>"}`)

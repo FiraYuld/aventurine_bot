@@ -120,6 +120,12 @@ function loadConfig() {
     chatId: requiredInt("CHAT_ID"),
     adminLogChatId: requiredInt("ADMIN_LOG_CHAT_ID"),
     moderationChatId: requiredInt("MODERATION_CHAT_ID"),
+    /**
+     * Отдельный публичный чат турниров (не связан с каналом). Пусто = выключено.
+     * Там бот ведёт журнал входов и ловит ссылки от только что вошедших
+     * (удалить + мут + карточка в MODERATION_CHAT_ID). Баны — только в этом чате.
+     */
+    tournamentChatId: optionalIntValue("TOURNAMENT_CHAT_ID"),
     upstashRedisRestUrl: required("UPSTASH_REDIS_REST_URL"),
     upstashRedisRestToken: required("UPSTASH_REDIS_REST_TOKEN"),
     reactionAutoBanWindowMs: REACTION_AUTOBAN_WINDOW_MS,
