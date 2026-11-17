@@ -17,7 +17,9 @@ Telegram-бот модерации канала и привязанного ча
 - Ветки `claude/*` или `codex/*`, только через PR в `main`.
 - **Слияние в `main` = деплой в прод** (Vercel подключён к GitHub). Сливать только
   с явного согласия владельца.
-- Перед PR: `npm run typecheck` и `npm test`.
+- Перед PR: `npm run verify` (typecheck + все тесты, включая сухой прогон webhook
+  с поддельными Telegram/Redis — `tests/e2e/`). Как добавить сценарий —
+  `.claude/skills/verify/SKILL.md`. Claude Code запускает его сам хуком Stop.
 - Секреты: `.env` в `.gitignore`. В Vercel переменные sensitive —
   `vercel env pull` отдаёт `[SENSITIVE]`, настоящий `.env` только у владельца.
 
