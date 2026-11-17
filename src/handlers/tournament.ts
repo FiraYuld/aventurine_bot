@@ -41,10 +41,13 @@ function createStore(): TournamentStore {
       await r.set(`tnew:${userId}`, String(at), { nx: true, ex: NEWCOMER_WINDOW_SEC });
     },
     async clearJoined(userId) {
-      await r.del(`tnew:${userId}`);
+      await r.del(`tnew:${userId}`, `tlink:${userId}`);
     },
     async claimLinkCard(userId) {
       return (await r.set(`tlink:${userId}`, "1", { nx: true, ex: LINK_CARD_TTL_SEC })) === "OK";
+    },
+    async hasLinkCard(userId) {
+      return (await r.exists(`tlink:${userId}`)) > 0;
     },
     async getCard(userId) {
       const raw: unknown = await r.get(`tcard:${userId}`);
@@ -76,10 +79,17 @@ function createStore(): TournamentStore {
   };
 }
 
+let storeFactory: () => TournamentStore = createStore;
+
+/** Tests only: replace the Redis store with a fake. */
+export function setTournamentStoreForTests(factory: (() => TournamentStore) | undefined): void {
+  storeFactory = factory ?? createStore;
+}
+
 function makeDeps(api: Api, tournamentChatId: number): TournamentDeps {
   return {
     api: api as unknown as TournamentDeps["api"],
-    store: createStore(),
+    store: storeFactory(),
     tournamentChatId,
     moderationChatId: config.moderationChatId,
   };
@@ -87,7 +97,8 @@ function makeDeps(api: Api, tournamentChatId: number): TournamentDeps {
 
 /**
  * Tournament chat moderation. No-op when TOURNAMENT_CHAT_ID is not set.
- * Must be registered BEFORE registerModerationCallbacks (catch-all callback handler).
+ * Registered right after the scope middleware: it owns every update from the tournament
+ * chat (so a "/command" can't slip a link past it) and passes everything else on.
  */
 export function registerTournament(bot: Bot): void {
   const chatId = config.tournamentChatId;
@@ -126,7 +137,7 @@ export function registerTournament(bot: Bot): void {
     const user = upd.new_chat_member.user;
 
     if (isBan(upd.old_chat_member, upd.new_chat_member)) {
-      // Our own bans are handled by the button; a manual ban (Non-crit, Iris…) is cleaned up here.
+      // Our own bans are handled by the button; a manual ban (a moderator, Iris…) is cleaned up here.
       if (upd.from.id === ctx.me.id) return;
       const errors = await tournamentBan(makeDeps(ctx.api, chatId), user.id, {
         by: upd.from,

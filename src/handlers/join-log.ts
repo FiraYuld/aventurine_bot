@@ -82,11 +82,11 @@ export function registerJoinLog(bot: Bot): void {
     await next();
   });
 
-  bot.on("chat_member", async (ctx) => {
+  bot.on("chat_member", async (ctx, next) => {
     const upd = ctx.chatMember;
     const chatId = upd.chat.id;
     const place = chatId === config.chatId ? "chat" : chatId === config.channelId ? "channel" : null;
-    if (!place) return;
+    if (!place) return next();
     const user = upd.new_chat_member.user;
 
     // Banned by someone else (Iris, a moderator by hand): ban in both places, offer the wipe.

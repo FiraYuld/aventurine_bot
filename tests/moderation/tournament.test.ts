@@ -15,9 +15,9 @@ import {
   type TournamentStore,
 } from "../../src/tournament.js";
 
-const TOUR = -1003976087525;
+const TOUR = -100500;
 const MOD = -100400;
-const SPAMMER: User = { id: 777, is_bot: false, first_name: "Скуп геншина,ZZZ,Хонкай", username: "pt7rjk2ll" };
+const SPAMMER: User = { id: 777, is_bot: false, first_name: "Скуп аккаунтов", username: "spam_seller" };
 const NOW = 1_800_000_000;
 
 class FakeApi implements TournamentApi {
@@ -79,6 +79,10 @@ class FakeStore implements TournamentStore {
   }
   async clearJoined(userId: number) {
     this.joined.delete(userId);
+    this.linkClaimed.delete(userId);
+  }
+  async hasLinkCard(userId: number) {
+    return this.linkClaimed.has(userId);
   }
   async claimLinkCard(userId: number) {
     if (this.linkClaimed.has(userId)) return false;
@@ -110,7 +114,7 @@ function setup() {
 
 /** The spam from the screenshots: "ЖМИ" is a hidden link, plus a t.me/+ invite. */
 function spamMessage(id = 10, from: User = SPAMMER): Message {
-  const text = "Продать свой аккаунт в Геншине, ZZZ, Honkai\nМожно тут: ЖМИ\nhttps://t.me/+wQAXp4n9vTZjMmRi";
+  const text = "Продать свой аккаунт в Геншине, ZZZ, Honkai\nМожно тут: ЖМИ\nhttps://t.me/+FakeInviteCode";
   return {
     message_id: id,
     date: NOW,
@@ -141,6 +145,11 @@ test("findLinkReason: links, hidden links, t.me text, forwards, url buttons; not
   assert.equal(
     findLinkReason({ ...plain("hi"), reply_markup: { inline_keyboard: [[{ text: "go", url: "https://x" }]] } } as Message),
     "кнопка со ссылкой",
+  );
+  assert.equal(
+    findLinkReason({ ...plain("смотри"), forward_origin: { type: "user", date: 0, sender_user: SPAMMER } } as Message),
+    null,
+    "a forward from a person is not a link",
   );
   assert.equal(findLinkReason(plain("привет, когда следующий турнир?")), null);
   assert.equal(findLinkReason(plain("@FiraYuld можно участвовать?", [{ type: "mention", offset: 0, length: 9 }])), null);
@@ -214,13 +223,33 @@ test("link beats the join log: join details go under the link card, buttons kept
   assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`]);
 });
 
+test("quick re-join without a link: plain join card, no unmute button", async () => {
+  const { api, store, deps } = setup();
+  await store.markJoined(SPAMMER.id, NOW);
+  await recordJoin(deps, SPAMMER, "👤 вход 1");
+  await recordJoin(deps, SPAMMER, "👤 вход 2");
+  assert.equal(api.calls.filter((c) => c.startsWith("send:")).length, 2);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`]);
+});
+
+test("after an unmute a new link from the same person gets a fresh card", async () => {
+  const { api, store, deps } = setup();
+  await store.markJoined(SPAMMER.id, NOW);
+  await guardNewcomerLink(deps, spamMessage(10));
+  await tournamentUnmute(deps, SPAMMER.id);
+  await store.markJoined(SPAMMER.id, NOW); // re-joined
+  api.calls = [];
+  await guardNewcomerLink(deps, spamMessage(12));
+  assert.ok(api.calls.some((c) => c.startsWith("edit:") || c.startsWith("send:")));
+});
+
 test("ban button: ban only in the tournament chat, delete join message, offer 🧹", async () => {
   const { api, store, deps } = setup();
   store.joined.set(SPAMMER.id, NOW);
   store.joinMsgs.set(SPAMMER.id, [5]);
   store.cards.set(SPAMMER.id, { messageId: 9, html: "card", at: NOW });
 
-  const errors = await tournamentBan(deps, SPAMMER.id, { by: { id: 1, is_bot: false, first_name: "Non-crit" } });
+  const errors = await tournamentBan(deps, SPAMMER.id, { by: { id: 1, is_bot: false, first_name: "Модератор" } });
   assert.deepEqual(errors, []);
   assert.deepEqual(
     api.calls.filter((c) => c.startsWith("ban:")),
@@ -228,7 +257,7 @@ test("ban button: ban only in the tournament chat, delete join message, offer �
     "never the channel or the discussion chat; no revoke",
   );
   assert.ok(api.calls.includes(`delete:${TOUR}:5`));
-  assert.match(api.lastText, /Забанен в чате турниров<\/b> \(Non-crit\)/);
+  assert.match(api.lastText, /Забанен в чате турниров<\/b> \(Модератор\)/);
   assert.deepEqual(buttons(api.lastMarkup), [`t:w:${SPAMMER.id}`]);
   assert.equal(store.joined.has(SPAMMER.id), false);
 });

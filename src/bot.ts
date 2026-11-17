@@ -18,6 +18,8 @@ export function getBot(): Bot {
     botInstance = new Bot(cfg.botToken);
     console.info(`[bot] init: env=${cfg.botEnv}`);
     botInstance.use(scopeMiddleware);
+    // Чат турниров — первым: забирает все его апдейты, остальное отдаёт дальше.
+    registerTournament(botInstance);
     // Команды регистрируются ПЕРВЫМИ, чтобы не уходить в LLM-хендлер.
     registerCommands(botInstance);
     registerPostPublishing(botInstance);
@@ -25,7 +27,6 @@ export function getBot(): Bot {
     // До registerModerationCallbacks: там catch-all callback_query, он съел бы кнопку «Забанить» журнала.
     registerJoinLog(botInstance);
     registerVpnNickname(botInstance);
-    registerTournament(botInstance);
     registerModerationCallbacks(botInstance);
     // LLM-режим регистрируется ПОСЛЕ команд: команды типа /ping /status уже
     // отработали и вернули, а оставшиеся message:text попадут сюда.

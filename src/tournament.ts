@@ -28,9 +28,8 @@ const URL_ENTITY_TYPES = new Set<MessageEntity["type"]>(["url", "text_link"]);
 
 /** Why this message counts as a link, or null. Mentions (@user) are not links. */
 export function findLinkReason(msg: Message): string | null {
-  if (msg.forward_origin) {
-    return msg.forward_origin.type === "channel" ? "пересылка из канала" : "пересланное сообщение";
-  }
+  // Only channel forwards: a member forwarding a friend's message is not spam by itself.
+  if (msg.forward_origin?.type === "channel") return "пересылка из канала";
   const entities = [...(msg.entities ?? []), ...(msg.caption_entities ?? [])];
   if (entities.some((e) => e.type === "text_link")) return "скрытая ссылка";
   if (entities.some((e) => URL_ENTITY_TYPES.has(e.type))) return "ссылка";
@@ -171,9 +170,12 @@ export interface TournamentStore {
   getJoinedAt(userId: number): Promise<number | null>;
   /** Sets the newcomer marker unless it is already set (keeps the first join time). */
   markJoined(userId: number, at: number): Promise<void>;
+  /** Clears the newcomer marker and the link-card slot (after a ban or an unmute). */
   clearJoined(userId: number): Promise<void>;
   /** true if this call took the per-user link-card slot. */
   claimLinkCard(userId: number): Promise<boolean>;
+  /** Is the link-card slot taken (a link card was posted for the current stay)? */
+  hasLinkCard(userId: number): Promise<boolean>;
   getCard(userId: number): Promise<TournamentCard | null>;
   setCard(userId: number, card: TournamentCard): Promise<void>;
   addJoinMessage(userId: number, messageId: number): Promise<void>;
@@ -312,8 +314,8 @@ export async function recordJoin(
   joinLogHtml: string,
 ): Promise<void> {
   const existing = await deps.store.getCard(user.id);
-  const linkSeen = existing?.at !== undefined && nowSec(deps) - existing.at < SAME_JOIN_SEC;
-  if (existing && linkSeen && (await deps.store.getJoinedAt(user.id)) !== null) {
+  const recent = existing?.at !== undefined && nowSec(deps) - existing.at < SAME_JOIN_SEC;
+  if (existing && recent && (await deps.store.hasLinkCard(user.id))) {
     // Link card is already up with 🔨/✅: add the join details under it, keep the buttons.
     await updateCard(deps, user.id, user, joinLogHtml, mutedKeyboard(user.id), false);
     return;
