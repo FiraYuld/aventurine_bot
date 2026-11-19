@@ -93,11 +93,13 @@ const HINT_PATTERNS: Array<[RegExp, string]> = [
     /18\s*\+|\bxxx\b|porn|порн|onlyfans|онлифанс|эрот|интим|nude|nsfw|сливы|slivy|секс|sex|see\s*more\s*of\s*me/iu,
     "18+",
   ],
-  // "Скуп геншина,ZZZ,Хонкай", "Продать акк тут 👉 …" (tournament chat spam, Nov 2026).
+  // "Скуп <игры>", "Продать акк тут 👉 …" (tournament chat spam, Nov 2026).
   [/скуп|выкуп\S*\s+акк|прода\S*\s+(?:сво\S*\s+)?акк|продажа\s+акк|buy\s+accounts?/iu, "скуп аккаунтов"],
   [/казино|casino|ставк|букмекер|\bbet\b|1xbet|слот/iu, "казино/ставки"],
   [/заработ|доход|инвест|крипт|crypto|арбитраж|p2p|трейд/iu, "заработок/крипта"],
   [/знакомств|dating|девушк.{0,10}(рядом|город)|встреч/iu, "знакомства"],
+  // "Секретный Переходник": a redirect channel in the profile, typical for 18+ bots.
+  [/переходник/iu, "канал-переходник"],
 ];
 
 export function findHints(texts: ReadonlyArray<string | undefined>): string[] {
@@ -111,8 +113,8 @@ export function findHints(texts: ReadonlyArray<string | undefined>): string[] {
 
 /**
  * User IDs grow over time; 8 billion+ are accounts registered roughly in 2025–2026.
- * Every Katya/OnlyFans/account-selling bot seen in Nov 2026 was in this range (7.0–9.2 bn),
- * old real members mostly below. Real newcomers exist too — a hint, not a verdict.
+ * Replay over two weeks of join cards (Nov 2026): 17 of 19 banned spam accounts were ≥ 8 bn,
+ * 4 of 39 untouched joiners too. Real newcomers exist — a hint, not a verdict.
  */
 export const NEW_ACCOUNT_ID_FROM = 8_000_000_000;
 

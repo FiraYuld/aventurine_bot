@@ -34,10 +34,11 @@ test("hints flag typical spam profile wording", () => {
   assert.deepEqual(findHints(["Заработок на крипте"]), ["заработок/крипта"]);
   assert.deepEqual(findHints(["Сонный уголок", "любит котиков"]), []);
   assert.deepEqual(findHints(["Model", "See more of me 🩷"]), ["18+"]);
-  assert.deepEqual(findHints(["Скуп геншина,ZZZ,Хонкай"]), ["скуп аккаунтов"]);
+  assert.deepEqual(findHints(["Скуп игр,ZZZ"]), ["скуп аккаунтов"]);
   assert.deepEqual(findHints(["Продать свой аккаунт в Геншине"]), ["скуп аккаунтов"]);
   assert.deepEqual(findHints(["Продать акк тут 👉"]), ["скуп аккаунтов"]);
-  assert.deepEqual(findHints(["Senjimaru | Genshin & HSR", "Моя игровая комнатка, Genshin, HSR, ZZZ"]), []);
+  assert.deepEqual(findHints(["Секретный Переходник"]), ["канал-переходник"]);
+  assert.deepEqual(findHints(["Игровой канал | Genshin & HSR", "Делюсь новостями: Genshin, HSR, ZZZ"]), []);
 });
 
 test("profile hints: Telegram link in bio, Katya botnet shape", () => {

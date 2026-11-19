@@ -112,7 +112,7 @@ test("'message is not modified' is not an error", async () => {
 
 test("new-account hint by user ID", () => {
   const p = (id: number) => findProfileHints({ user: { id, is_bot: false, first_name: "A", username: "a" }, profileReadable: true, bio: "x" });
-  assert.deepEqual(p(9_200_622_645), ["новый аккаунт"]);
-  assert.deepEqual(p(892_985_922), []);
-  assert.deepEqual(p(5_583_503_247), []);
+  assert.deepEqual(p(9_000_000_003), ["новый аккаунт"]);
+  assert.deepEqual(p(900_000_001), []);
+  assert.deepEqual(p(5_500_000_002), []);
 });
