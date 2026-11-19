@@ -177,7 +177,7 @@ test("newcomer link: delete, mute, one card with ban/unmute; copies only deleted
   assert.equal(api.calls.filter((c) => c.startsWith("send:")).length, 1);
   assert.match(api.lastText, /Ссылка от новичка/);
   assert.match(api.lastText, /сообщение удалено, замучен/);
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
 
   // Second copy (Telegram delivers in parallel): deleted, no second card.
   api.calls = [];
@@ -202,13 +202,13 @@ test("link card is appended to the join-log card", async () => {
   const { api, store, deps } = setup();
   await store.markJoined(SPAMMER.id, NOW);
   await recordJoin(deps, SPAMMER, "👤 <b>Вход в чат турниров</b>");
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:o:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
   const cardId = store.cards.get(SPAMMER.id)!.messageId;
 
   await guardNewcomerLink(deps, spamMessage());
   assert.ok(api.calls.includes(`edit:${MOD}:${cardId}`));
   assert.match(api.lastText, /Вход в чат турниров[\s\S]*Ссылка от новичка/);
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
 });
 
 test("link beats the join log: join details go under the link card, buttons kept", async () => {
@@ -220,7 +220,7 @@ test("link beats the join log: join details go under the link card, buttons kept
   await recordJoin(deps, SPAMMER, "👤 <b>Вход в чат турниров</b>");
   assert.equal(api.calls.filter((c) => c.startsWith("send:")).length, 1);
   assert.ok(api.calls.includes(`edit:${MOD}:${cardId}`));
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
 });
 
 test("quick re-join without a link: plain join card, no unmute button", async () => {
@@ -229,7 +229,7 @@ test("quick re-join without a link: plain join card, no unmute button", async ()
   await recordJoin(deps, SPAMMER, "👤 вход 1");
   await recordJoin(deps, SPAMMER, "👤 вход 2");
   assert.equal(api.calls.filter((c) => c.startsWith("send:")).length, 2);
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:o:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
 });
 
 test("after an unmute a new link from the same person gets a fresh card", async () => {

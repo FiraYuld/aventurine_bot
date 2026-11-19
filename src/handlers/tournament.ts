@@ -1,7 +1,14 @@
 import type { Api, Bot } from "grammy";
 import { config } from "../config.js";
-import { buildJoinLogHtml, isBan, isJoin } from "../join-log.js";
-import { logError } from "../logger.js";
+import {
+  applyJoinCardAction,
+  buildJoinLogHtml,
+  isBan,
+  isJoin,
+  parseJoinCardCallback,
+  type JoinCardDeps,
+} from "../join-log.js";
+import { escapeHtml, logError } from "../logger.js";
 import { getRedis } from "../redis.js";
 import {
   guardNewcomerLink,
@@ -19,7 +26,7 @@ import {
   type TournamentDeps,
   type TournamentStore,
 } from "../tournament.js";
-import { isInside, readProfile } from "./join-log.js";
+import { isInside, readCurrentProfile, readProfile } from "./join-log.js";
 
 /**
  * Redis keys (separate from the discussion chat's joinmsg:/joinlog:):
@@ -175,6 +182,50 @@ export function registerTournament(bot: Bot): void {
       await recordJoin(d, user, html);
     } catch (err) {
       console.error("[tournament] join log failed", { userId: user.id, err });
+    }
+  });
+
+  // "✅ Свой" / "↩️ Отменить" / "🔄 Профиль" on tournament cards.
+  bot.callbackQuery(/^t:[orp]:\d+$/, async (ctx) => {
+    const parsed = parseJoinCardCallback(ctx.callbackQuery.data);
+    const msg = ctx.callbackQuery.message;
+    if (!parsed || !msg) {
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+    const { action, userId } = parsed;
+    const label = { confirm: "Отмечаю как своего", unconfirm: "Возвращаю кнопки", refresh: "Читаю профиль…" }[action];
+    await ctx.answerCallbackQuery({ text: label }).catch(() => {});
+    const store = storeFactory();
+    try {
+      // A confirmed person is no longer a newcomer: their links are not deleted.
+      if (action === "confirm") await store.clearJoined(userId);
+      await applyJoinCardAction(
+        {
+          api: ctx.api as unknown as JoinCardDeps["api"],
+          getCard: (id) => store.getCard(id),
+          setCard: async (id, e) => {
+            const old = await store.getCard(id).catch(() => null);
+            await store.setCard(id, { ...old, ...e });
+          },
+          moderationChatId: config.moderationChatId,
+        },
+        {
+          prefix: "t",
+          action,
+          userId,
+          messageId: msg.message_id,
+          fallbackHtml: escapeHtml("text" in msg && msg.text ? msg.text : `ID ${userId}`),
+          by: ctx.from,
+          currentMarkup: "reply_markup" in msg ? msg.reply_markup : undefined,
+          readProfile: async () => {
+            const { current, ...profile } = await readCurrentProfile(ctx.api, userId);
+            return { user: current, ...profile };
+          },
+        },
+      );
+    } catch (err) {
+      await logError(ctx.api, `чат турниров: кнопка ${action} (${userId})`, err);
     }
   });
 

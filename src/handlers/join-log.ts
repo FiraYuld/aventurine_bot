@@ -4,15 +4,18 @@ import { config } from "../config.js";
 import { parseWipeCallback, runBanFollowUp, runWipe } from "../ban-cleanup.js";
 import { cleanupDeps, rememberJoinLog, rememberJoinMessage } from "../ban-cleanup-store.js";
 import {
+  applyJoinCardAction,
   buildJoinLogHtml,
   isBan,
   isJoin,
   joinLogKeyboard,
   parseJoinBanCallback,
+  parseJoinCardCallback,
+  type JoinCardDeps,
   type JoinLogInfo,
   type PersonalChannelInfo,
 } from "../join-log.js";
-import { logError } from "../logger.js";
+import { escapeHtml, logError } from "../logger.js";
 
 const INSIDE = new Set(["creator", "administrator", "member"]);
 
@@ -30,8 +33,21 @@ export async function readProfile(
   api: Api,
   user: User,
 ): Promise<Pick<JoinLogInfo, "bio" | "profileReadable" | "personalChannel">> {
+  const { current: _current, ...profile } = await readCurrentProfile(api, user.id);
+  return profile;
+}
+
+/** Same, plus the name/username as they are now (for the 🔄 refresh). Never throws. */
+export async function readCurrentProfile(
+  api: Api,
+  userId: number,
+): Promise<Pick<JoinLogInfo, "bio" | "profileReadable" | "personalChannel"> & { current: User }> {
+  const current: User = { id: userId, is_bot: false, first_name: "" };
   try {
-    const full = await api.getChat(user.id);
+    const full = await api.getChat(userId);
+    if ("first_name" in full && full.first_name) current.first_name = full.first_name;
+    if ("last_name" in full && full.last_name) current.last_name = full.last_name;
+    if ("username" in full && full.username) current.username = full.username;
     const bio = "bio" in full ? full.bio : undefined;
     const pcChat = "personal_chat" in full ? full.personal_chat : undefined;
     let personalChannel: PersonalChannelInfo | undefined;
@@ -50,10 +66,10 @@ export async function readProfile(
         // private or inaccessible channel: title from personal_chat is enough
       }
     }
-    return { bio, profileReadable: true, personalChannel };
+    return { bio, profileReadable: true, personalChannel, current };
   } catch (err) {
-    console.error("[join-log] getChat(user) failed", { userId: user.id, err });
-    return { profileReadable: false };
+    console.error("[join-log] getChat(user) failed", { userId, err });
+    return { profileReadable: false, current };
   }
 }
 
@@ -148,6 +164,45 @@ export function registerJoinLog(bot: Bot): void {
       await followUpAfterBan(ctx.api, userId, { by: ctx.from });
     } catch (err) {
       await logError(ctx.api, `кнопка бана из журнала входов (${userId})`, err);
+    }
+  });
+
+  // "✅ Свой" / "↩️ Отменить" / "🔄 Профиль" under a join-log entry.
+  bot.callbackQuery(/^j:[orp]:\d+$/, async (ctx) => {
+    const parsed = parseJoinCardCallback(ctx.callbackQuery.data);
+    const msg = ctx.callbackQuery.message;
+    if (!parsed || !msg) {
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+    const { action, userId } = parsed;
+    const label = { confirm: "Отмечаю как своего", unconfirm: "Возвращаю кнопки", refresh: "Читаю профиль…" }[action];
+    await ctx.answerCallbackQuery({ text: label }).catch(() => {});
+    const store = cleanupDeps(ctx.api).store;
+    try {
+      await applyJoinCardAction(
+        {
+          api: ctx.api as unknown as JoinCardDeps["api"],
+          getCard: (id) => store.getJoinLog(id),
+          setCard: (id, e) => store.setJoinLog(id, e),
+          moderationChatId: config.moderationChatId,
+        },
+        {
+          prefix: "j",
+          action,
+          userId,
+          messageId: msg.message_id,
+          fallbackHtml: escapeHtml("text" in msg && msg.text ? msg.text : `ID ${userId}`),
+          by: ctx.from,
+          currentMarkup: "reply_markup" in msg ? msg.reply_markup : undefined,
+          readProfile: async () => {
+            const { current, ...profile } = await readCurrentProfile(ctx.api, userId);
+            return { user: current, ...profile };
+          },
+        },
+      );
+    } catch (err) {
+      await logError(ctx.api, `кнопка журнала входов ${action} (${userId})`, err);
     }
   });
 

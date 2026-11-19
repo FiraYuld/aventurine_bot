@@ -1,5 +1,6 @@
 import { InlineKeyboard } from "grammy";
 import type { ChatPermissions, Message, MessageEntity, User } from "grammy/types";
+import { joinCardCallbackData, joinLogKeyboard } from "./join-log.js";
 import { escapeHtml } from "./logger.js";
 
 /**
@@ -58,14 +59,17 @@ export function parseTournamentCallback(
   return { action, userId };
 }
 
+/** 🔨 ban, ✅ Свой (t:o), 🔄 profile (t:p) — same layout as the discussion join log. */
 export function joinKeyboard(userId: number): InlineKeyboard {
-  return new InlineKeyboard().text("🔨 Забанить", tournamentCallbackData("ban", userId));
+  return joinLogKeyboard(userId, "t");
 }
 
 export function mutedKeyboard(userId: number): InlineKeyboard {
   return new InlineKeyboard()
     .text("🔨 Забанить", tournamentCallbackData("ban", userId))
-    .text("✅ Размутить", tournamentCallbackData("unmute", userId));
+    .text("✅ Размутить", tournamentCallbackData("unmute", userId))
+    .row()
+    .text("🔄 Профиль", joinCardCallbackData("refresh", userId, "t"));
 }
 
 export function wipeKeyboard(userId: number): InlineKeyboard {

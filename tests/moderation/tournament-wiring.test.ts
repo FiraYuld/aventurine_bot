@@ -122,6 +122,27 @@ test("link from the newcomer: deleted and muted in the tournament chat only", as
   assert.ok(!calls.some((c) => c.payload.chat_id === -100300 || c.payload.chat_id === -100200));
 });
 
+test("✅ Свой on a tournament card: card edited without the ban button, newcomer marker cleared", async () => {
+  joined.set(USER.id, 0);
+  calls.length = 0;
+  await bot.handleUpdate({
+    update_id: 4,
+    callback_query: {
+      id: "cq",
+      from: { id: 1, is_bot: false, first_name: "Модератор" },
+      chat_instance: "x",
+      data: `t:o:${USER.id}`,
+      message: { message_id: 900, date: 0, chat: { id: MOD, type: "supergroup" }, text: "👤 Вход в чат турниров" },
+    },
+  } as unknown as Update);
+  const edit = calls.find((c) => c.method === "editMessageText");
+  assert.ok(edit, "card edited (callback reached the tournament handler, not the catch-all)");
+  assert.match(String(edit.payload.text), /Свой/);
+  const data = JSON.stringify(edit.payload.reply_markup);
+  assert.ok(!data.includes(`t:b:${USER.id}`) && data.includes(`t:r:${USER.id}`));
+  assert.equal(joined.has(USER.id), false);
+});
+
 test("ordinary message in the tournament chat: no action", async () => {
   calls.length = 0;
   await bot.handleUpdate({
