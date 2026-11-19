@@ -264,23 +264,25 @@ export async function guardNewcomerLink(deps: TournamentDeps, msg: Message): Pro
   if (!reason) return { acted: false, errors: [] };
 
   const { api, store, tournamentChatId } = deps;
+  // Lock lease is 8 s; everything up to the delete must fit well inside it.
+  const started = Date.now();
+  const tooSlow = () => Date.now() - started > (deps.guardMaxMs ?? GUARD_MAX_MS);
   const joinedAt = await store.getJoinedAt(user.id);
   if (joinedAt === null) return { acted: false, errors: [] };
   if (await store.isConfirmed(user.id)) return { acted: false, errors: [] };
 
-  const started = Date.now();
   try {
     const m = await api.getChatMember(tournamentChatId, user.id);
     if (ADMIN_STATUSES.has(m.status)) return { acted: false, errors: [] };
   } catch {
     // Can't check: a just-joined account is almost never an admin, keep going.
   }
-  // Slow Telegram: the card lock (8 s lease) may be about to expire. Don't act late —
-  // re-check the confirmation right before the irreversible delete.
-  if (Date.now() - started > (deps.guardMaxMs ?? GUARD_MAX_MS)) {
+  // Re-check the confirmation right before the irreversible delete, and don't act late:
+  // after a slow Telegram/Redis call the lease may be gone and "Свой" may have landed.
+  if (await store.isConfirmed(user.id)) return { acted: false, errors: [] };
+  if (tooSlow()) {
     return { acted: false, errors: ["проверка ссылки заняла слишком долго — сообщение не тронуто"] };
   }
-  if (await store.isConfirmed(user.id)) return { acted: false, errors: [] };
 
   const errors: string[] = [];
   let deleted = true;

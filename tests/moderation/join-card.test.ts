@@ -123,6 +123,15 @@ test("beforeEdit failure (e.g. Redis) leaves the card unchanged: never 'Свой
   assert.equal(cards.get(USER_ID)!.html, CARD);
 });
 
+test("card read error stops the action (not treated as 'no card')", async () => {
+  const { edits, deps } = setup({ messageId: 50, html: "latest" });
+  deps.getCard = async () => {
+    throw new Error("redis down");
+  };
+  await assert.rejects(applyJoinCardAction(deps, { ...base, action: "confirm", fallbackHtml: "old" }));
+  assert.equal(edits.length, 0);
+});
+
 test("'message is not modified' is not an error", async () => {
   const { deps } = setup({ messageId: 9, html: CARD });
   deps.api.editMessageText = async () => {
@@ -156,6 +165,8 @@ test("hint regexes: no false positives on ordinary words", () => {
   assert.deepEqual(findHints(["Искупаться в море"]), []);
   assert.deepEqual(findHints(["Скупой рыцарь"]), []);
   assert.deepEqual(findHints(["Скупка аккаунтов"]), ["скуп аккаунтов"]);
+  assert.deepEqual(findHints(["Продаю аккумуляторы"]), []);
+  assert.deepEqual(findHints(["Продам акки HSR"]), ["скуп аккаунтов"]);
   const u = (first_name: string): User => ({ id: 1, is_bot: false, first_name });
   assert.deepEqual(findProfileHints({ user: u("A"), profileReadable: true, bio: "about.me/alice" }), []);
   assert.deepEqual(findProfileHints({ user: u("Категорически против"), profileReadable: true }), []);

@@ -182,6 +182,19 @@ export async function runBanFollowUp(
       });
       await store.setJoinLog(userId, { messageId: sent.message_id, html });
     }
+  }).catch(async (err) => {
+    // Card lock busy / store down: the ban itself is done — still give moderators a
+    // card with the 🧹 button (a new message, no pointer write), then report the error.
+    const html = `${banCardHtml(userId, opts.user)}\n\n${bannedFooterHtml(opts.by)}`;
+    await api
+      .sendMessage(targets.moderationChatId, html, {
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+        disable_notification: true,
+        reply_markup: wipeKeyboard(userId),
+      })
+      .catch(() => {});
+    throw err;
   }));
 
   return { ran: true, errors };

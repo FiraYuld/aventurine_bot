@@ -6,6 +6,7 @@ import { logError } from "../logger.js";
 import { getRedis } from "../redis.js";
 import {
   guardNewcomerLink,
+  joinKeyboard,
   LINK_CARD_TTL_SEC,
   markNewcomer,
   NEWCOMER_WINDOW_SEC,
@@ -184,7 +185,16 @@ export function registerTournament(bot: Bot): void {
         viaFolder: upd.via_chat_folder_invite_link,
         ...profile,
       });
-      await withCardLock("t", user.id, () => recordJoin(d, user, html), { bestEffort: true });
+      await withCardLock("t", user.id, () => recordJoin(d, user, html)).catch(async (err) => {
+        // Lock busy: still post the join card, just without the shared pointer.
+        console.error("[tournament] join card without lock", { userId: user.id, err });
+        await ctx.api.sendMessage(config.moderationChatId, html, {
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
+          disable_notification: true,
+          reply_markup: user.is_bot ? undefined : joinKeyboard(user.id),
+        });
+      });
     } catch (err) {
       console.error("[tournament] join log failed", { userId: user.id, err });
     }

@@ -94,7 +94,7 @@ const HINT_PATTERNS: Array<[RegExp, string]> = [
     "18+",
   ],
   // "Скуп <игры>", "Продать акк тут 👉 …" (tournament chat spam, Nov 2026).
-  [/(?<!\p{L})скуп(?:ка|ки|аю|аем)?(?!\p{L})|выкуп\S*\s+акк|прода\S*\s+(?:сво\S*\s+)?акк|продажа\s+акк|buy\s+accounts?/iu, "скуп аккаунтов"],
+  [/(?<!\p{L})скуп(?:ка|ки|аю|аем)?(?!\p{L})|выкуп\S*\s+акк(?:аунт\p{L}*|и|ов|а|ом|ах)?(?!\p{L})|прода\S*\s+(?:сво\S*\s+)?акк(?:аунт\p{L}*|и|ов|а|ом|ах)?(?!\p{L})|продажа\s+акк(?:аунт\p{L}*|и|ов|а|ом|ах)?(?!\p{L})|buy\s+accounts?/iu, "скуп аккаунтов"],
   [/казино|casino|ставк|букмекер|\bbet\b|1xbet|слот/iu, "казино/ставки"],
   [/заработ|доход|инвест|крипт|crypto|арбитраж|p2p|трейд/iu, "заработок/крипта"],
   [/знакомств|dating|девушк.{0,10}(рядом|город)|встреч/iu, "знакомства"],
@@ -279,7 +279,8 @@ export async function applyJoinCardAction(
     beforeEdit?: () => Promise<void>;
   },
 ): Promise<JoinCardResult> {
-  const stored = await deps.getCard(opts.userId).catch(() => null);
+  // A read error is not "no card": stop, rather than overwrite state we couldn't see.
+  const stored = await deps.getCard(opts.userId);
   const own = stored !== null && stored.messageId === opts.messageId;
   const base = own ? stored.html : opts.fallbackHtml;
   if (hasModerationResult(base)) return "state-changed";
