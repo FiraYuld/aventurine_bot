@@ -24,6 +24,8 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test \"tests/**/*.test.ts\"",
+    "verify": "npm run typecheck && npm test",
+    "verify:e2e": "tsx --test tests/e2e/webhook.test.ts",
     "local": "vercel dev",
     "deploy": "vercel --prod",
     "analysis:stats": "node --env-file=.env --import tsx tools/chat-analysis/01-parse-stats.ts",
