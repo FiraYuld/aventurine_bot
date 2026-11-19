@@ -53,7 +53,12 @@ export function isJoin(oldMember: ChatMember, newMember: ChatMember): boolean {
  * against names, bio and the linked channel's title/description.
  */
 const HINT_PATTERNS: Array<[RegExp, string]> = [
-  [/18\s*\+|\bxxx\b|porn|порн|onlyfans|онлифанс|эрот|интим|nude|nsfw|сливы|slivy|секс|sex/iu, "18+"],
+  [
+    /18\s*\+|\bxxx\b|porn|порн|onlyfans|онлифанс|эрот|интим|nude|nsfw|сливы|slivy|секс|sex|see\s*more\s*of\s*me/iu,
+    "18+",
+  ],
+  // "Скуп геншина,ZZZ,Хонкай", "Продать акк тут 👉 …" (tournament chat spam, Nov 2026).
+  [/скуп|выкуп\S*\s+акк|прода\S*\s+(?:сво\S*\s+)?акк|продажа\s+акк|buy\s+accounts?/iu, "скуп аккаунтов"],
   [/казино|casino|ставк|букмекер|\bbet\b|1xbet|слот/iu, "казино/ставки"],
   [/заработ|доход|инвест|крипт|crypto|арбитраж|p2p|трейд/iu, "заработок/крипта"],
   [/знакомств|dating|девушк.{0,10}(рядом|город)|встреч/iu, "знакомства"],
@@ -65,6 +70,23 @@ export function findHints(texts: ReadonlyArray<string | undefined>): string[] {
   for (const [re, label] of HINT_PATTERNS) {
     if (re.test(joined)) out.push(label);
   }
+  return out;
+}
+
+const TG_LINK_IN_BIO_RE = /(?:t\.me|telegram\.me)\/\S+/iu;
+
+/**
+ * Channel-join botnet seen in Nov 2026: a "Katya" name variant ("Катюша ❤️",
+ * "Katyusha darling 🖤", "Катенька лапочка 😍"…), no username, no bio, no profile channel.
+ */
+const KATYA_NAME_RE = /^\s*(?:кат[юяеи]|катер|katy|katj|ekaterin)/iu;
+
+/** Profile-shape markers (need structured fields, not just text). Informational only. */
+export function findProfileHints(info: Pick<JoinLogInfo, "user" | "bio" | "profileReadable" | "personalChannel">): string[] {
+  const out: string[] = [];
+  if (info.bio && TG_LINK_IN_BIO_RE.test(info.bio)) out.push("ссылка на Telegram в описании");
+  const emptyProfile = info.profileReadable && !info.bio && !info.personalChannel && !info.user.username;
+  if (emptyProfile && KATYA_NAME_RE.test(info.user.first_name)) out.push("похож на сеть «Кать» (пустой профиль)");
   return out;
 }
 
@@ -147,6 +169,7 @@ export function buildJoinLogHtml(info: JoinLogInfo): string {
     info.personalChannel?.username,
     info.personalChannel?.description,
   ]);
+  hints.push(...findProfileHints(info));
   if (hints.length > 0) lines.push(`⚠️ Признаки: ${hints.join(", ")}`);
 
   return lines.join("\n");
