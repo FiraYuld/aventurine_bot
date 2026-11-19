@@ -94,7 +94,7 @@ const HINT_PATTERNS: Array<[RegExp, string]> = [
     "18+",
   ],
   // "Скуп <игры>", "Продать акк тут 👉 …" (tournament chat spam, Nov 2026).
-  [/(?<!\p{L})скуп|выкуп\S*\s+акк|прода\S*\s+(?:сво\S*\s+)?акк|продажа\s+акк|buy\s+accounts?/iu, "скуп аккаунтов"],
+  [/(?<!\p{L})скуп(?:ка|ки|аю|аем)?(?!\p{L})|выкуп\S*\s+акк|прода\S*\s+(?:сво\S*\s+)?акк|продажа\s+акк|buy\s+accounts?/iu, "скуп аккаунтов"],
   [/казино|casino|ставк|букмекер|\bbet\b|1xbet|слот/iu, "казино/ставки"],
   [/заработ|доход|инвест|крипт|crypto|арбитраж|p2p|трейд/iu, "заработок/крипта"],
   [/знакомств|dating|девушк.{0,10}(рядом|город)|встреч/iu, "знакомства"],
@@ -221,29 +221,21 @@ export function confirmedFooterHtml(by?: User): string {
 /**
  * Removes the "✅ Свой" footer (undo). Also matches the plain-text form, for cards
  * rebuilt from the message text (stored HTML expired or belongs to another message).
+ * Anchored to a paragraph start: profile text is clipped to one line, so it can't fake it.
  */
 export function stripConfirmedFooter(html: string): string {
   return html.replace(/\n\n✅ (?:<b>)?Свой(?:<\/b>)? — [^\n]*/gu, "");
 }
 
-/** Removes an earlier 🔄 section (HTML or plain-text form), so refreshes don't pile up. */
-export function stripProfileRefresh(html: string): string {
-  return html.replace(/\n\n🔄 (?:<b>)?Профиль сейчас(?:<\/b>)?[\s\S]*?(?=\n\n|$)/gu, "");
-}
+/**
+ * A moderation result is already on the card (ban, wipe, tournament link/unmute). Only
+ * the bot's own paragraph-leading marks count; bio/channel text sits inside a line.
+ */
+const RESULT_MARK_RE =
+  /(?:^|\n\n)(?:🔨 (?:<b>)?Забанен|🧹 (?:<b>)?Сообщения|🚫 (?:<b>)?Ссылка от новичка|✅ (?:<b>)?Размучен)/u;
 
-/** Footers written by the ban follow-up / tournament ban and by the wipe (HTML or plain). */
-const BANNED_RE = /🔨 (?:<b>)?Забанен/u;
-const WIPED_RE = /🧹 (?:<b>)?Сообщения/u;
-
-/** Telegram's limit is 4096 characters of text; keep a margin for entities. */
-const CARD_MAX = 4000;
-
-function capCard(html: string): string {
-  if (html.length <= CARD_MAX) return html;
-  // Only plain-text fallbacks can grow (no tags to break): drop the middle, keep head and tail.
-  const head = html.slice(0, 1500);
-  const tail = html.slice(-(CARD_MAX - 1500 - 3));
-  return `${head.slice(0, head.lastIndexOf("\n"))}\n…\n${tail.slice(tail.indexOf("\n") + 1)}`;
+export function hasModerationResult(html: string): boolean {
+  return RESULT_MARK_RE.test(html);
 }
 
 export interface JoinCardEntry {
@@ -260,60 +252,38 @@ export interface JoinCardDeps {
   moderationChatId: number;
 }
 
-export type JoinCardResult = "done" | "already-banned";
+export type JoinCardResult = "done" | "state-changed";
 
 /**
- * ✅ Свой / ↩️ undo / 🔄 refresh on a join card (`messageId` = the card the button is on).
+ * ✅ Свой / ↩️ undo on a join card (`messageId` = the card the button is on). Callers hold
+ * the per-user card lock (src/card-lock.ts), so the card read here is current.
  * `fallbackHtml` (escaped message text) is used when the stored card expired or belongs to
- * another message; in that case the stored pointer is left alone, so a later ban still
- * updates the user's latest card.
- * A card that already shows a ban never gets ✅/↩️, and 🔄 keeps its post-ban buttons
- * (`afterBanMarkup` = the 🧹 button), so a click racing a ban can't undo its result.
+ * another message; then the stored pointer is left alone, so a later ban still updates the
+ * user's latest card. If the card already shows a moderation result (a click raced a ban,
+ * a link was caught), nothing is changed.
  */
 export async function applyJoinCardAction(
   deps: JoinCardDeps,
   opts: {
     prefix: JoinCardPrefix;
-    action: JoinCardAction;
+    action: "confirm" | "unconfirm";
     userId: number;
     messageId: number;
     fallbackHtml: string;
     by?: User;
-    currentMarkup?: unknown;
-    afterBanMarkup?: unknown;
-    readProfile?: () => Promise<ProfileInfo>;
-    now?: Date;
   },
 ): Promise<JoinCardResult> {
-  // The slow part first, so the card is read right before it is written.
-  let profile: ProfileInfo | undefined;
-  if (opts.action === "refresh") {
-    if (!opts.readProfile) throw new Error("readProfile is required for refresh");
-    profile = await opts.readProfile();
-  }
-
   const stored = await deps.getCard(opts.userId).catch(() => null);
   const own = stored !== null && stored.messageId === opts.messageId;
-  const base = own ? stored.html : opts.fallbackHtml;
-  const banned = BANNED_RE.test(base);
+  const base = own ? stored.html : opts.fallbackHtml.slice(0, 3900);
+  if (hasModerationResult(base)) return "state-changed";
 
-  let html: string;
-  let markup: unknown;
-  if (opts.action === "confirm" || opts.action === "unconfirm") {
-    if (banned) return "already-banned";
-    const clean = stripConfirmedFooter(base);
-    if (opts.action === "confirm") {
-      html = `${clean}\n\n${confirmedFooterHtml(opts.by)}`;
-      markup = joinConfirmedKeyboard(opts.userId, opts.prefix);
-    } else {
-      html = clean;
-      markup = joinLogKeyboard(opts.userId, opts.prefix);
-    }
-  } else {
-    html = `${stripProfileRefresh(base)}\n\n${profileRefreshHtml(profile!, opts.now)}`;
-    markup = WIPED_RE.test(base) ? undefined : banned ? opts.afterBanMarkup : opts.currentMarkup;
-  }
-  html = capCard(html);
+  const clean = stripConfirmedFooter(base);
+  const html = opts.action === "confirm" ? `${clean}\n\n${confirmedFooterHtml(opts.by)}` : clean;
+  const markup =
+    opts.action === "confirm"
+      ? joinConfirmedKeyboard(opts.userId, opts.prefix)
+      : joinLogKeyboard(opts.userId, opts.prefix);
 
   try {
     await deps.api.editMessageText(deps.moderationChatId, opts.messageId, html, {
@@ -327,6 +297,22 @@ export async function applyJoinCardAction(
   }
   if (own || stored === null) await deps.setCard(opts.userId, { messageId: opts.messageId, html });
   return "done";
+}
+
+/**
+ * 🔄: posts the current profile as a reply under the card. The card itself is never
+ * edited here, so a refresh can't race a ban or grow the card past Telegram's limit.
+ */
+export async function sendProfileRefresh(
+  api: { sendMessage(chatId: number, text: string, other?: Record<string, unknown>): Promise<unknown> },
+  opts: { moderationChatId: number; cardMessageId: number; profile: ProfileInfo; now?: Date },
+): Promise<void> {
+  await api.sendMessage(opts.moderationChatId, profileRefreshHtml(opts.profile, opts.now), {
+    parse_mode: "HTML",
+    link_preview_options: { is_disabled: true },
+    disable_notification: true,
+    reply_parameters: { message_id: opts.cardMessageId, allow_sending_without_reply: true },
+  });
 }
 
 export function buildJoinLogHtml(info: JoinLogInfo): string {

@@ -5,9 +5,12 @@ import {
   applyJoinCardAction,
   findHints,
   findProfileHints,
+  hasModerationResult,
+  joinCardCallbackData,
   joinLogKeyboard,
   parseJoinCardCallback,
-  joinCardCallbackData,
+  profileRefreshHtml,
+  sendProfileRefresh,
   type JoinCardEntry,
 } from "../../src/join-log.js";
 
@@ -38,6 +41,7 @@ function setup(initial?: JoinCardEntry) {
 }
 
 const CARD = "👤 <b>Вход в канал</b> «Сонный Уголок»\n\nИмя: Катюша";
+const base = { prefix: "j" as const, userId: USER_ID, messageId: 9, fallbackHtml: "x", by: MODERATOR };
 
 test("join card keyboard: ban, ✅ Свой, 🔄; callback data round-trips for j and t", () => {
   assert.deepEqual(buttons(joinLogKeyboard(5)), ["j:b:5", "j:o:5", "j:p:5"]);
@@ -48,16 +52,15 @@ test("join card keyboard: ban, ✅ Свой, 🔄; callback data round-trips for
     }
   }
   assert.equal(parseJoinCardCallback("j:b:5"), null, "ban is a separate handler");
+  assert.ok(Buffer.byteLength(joinCardCallbackData("unconfirm", 9_999_999_999_999, "t")) <= 64);
 });
 
 test("✅ Свой hides the ban button; ↩️ brings it back and removes the footer", async () => {
   const { cards, edits, deps } = setup({ messageId: 9, html: CARD });
-  const base = { prefix: "j" as const, userId: USER_ID, messageId: 9, fallbackHtml: "x", by: MODERATOR };
 
-  await applyJoinCardAction(deps, { ...base, action: "confirm" });
+  assert.equal(await applyJoinCardAction(deps, { ...base, action: "confirm" }), "done");
   assert.match(edits[0]!.text, /✅ <b>Свой<\/b> — проверил\(а\) Модератор/);
   assert.deepEqual(buttons(edits[0]!.markup), [`j:r:${USER_ID}`, `j:p:${USER_ID}`]);
-  assert.ok(!buttons(edits[0]!.markup).some((b) => b.startsWith("j:b:")), "no ban button after confirm");
 
   await applyJoinCardAction(deps, { ...base, action: "unconfirm" });
   assert.equal(edits[1]!.text, CARD);
@@ -65,42 +68,43 @@ test("✅ Свой hides the ban button; ↩️ brings it back and removes the f
   assert.equal(cards.get(USER_ID)!.html, CARD);
 });
 
-test("🔄 appends the current profile with hints, replaces an older refresh, keeps buttons", async () => {
-  const { edits, deps } = setup({ messageId: 9, html: CARD });
-  const markup = { inline_keyboard: [[{ text: "x", callback_data: "j:b:1" }]] };
-  let bio: string | undefined;
-  const readProfile = async () => ({
-    user: { id: USER_ID, is_bot: false as const, first_name: "Катюша" },
-    profileReadable: true,
-    bio,
-  });
-  const base = { prefix: "j" as const, action: "refresh" as const, userId: USER_ID, messageId: 9, fallbackHtml: "x", currentMarkup: markup, readProfile };
-
-  await applyJoinCardAction(deps, { ...base, now: new Date("2026-11-19T10:00:00Z") });
-  assert.match(edits[0]!.text, /🔄 <b>Профиль сейчас<\/b> \(10:00 UTC\)/);
-  assert.match(edits[0]!.text, /новый аккаунт/);
-  assert.match(edits[0]!.text, /похож на сеть «Кать»/);
-  assert.equal(edits[0]!.markup, markup);
-
-  bio = "Мой канал 👉 https://t.me/+abc";
-  await applyJoinCardAction(deps, { ...base, now: new Date("2026-11-19T12:00:00Z") });
-  const text = edits[1]!.text;
-  assert.equal(text.match(/Профиль сейчас/g)?.length, 1, "older refresh replaced");
-  assert.match(text, /12:00 UTC/);
-  assert.match(text, /ссылка на Telegram в описании/);
-  assert.ok(text.startsWith(CARD));
+test("card that already shows a moderation result is never touched by ✅/↩️", async () => {
+  const results = [
+    "🔨 <b>Забанен</b> (Модератор): удалён из чата и канала.",
+    "🔨 <b>Забанен в чате турниров</b>.",
+    "🧹 <b>Сообщения и реакции удалены</b>.",
+    "🚫 <b>Ссылка от новичка</b> (ссылка): сообщение удалено, замучен.",
+    "✅ <b>Размучен</b>.",
+  ];
+  for (const r of results) {
+    const { edits, deps } = setup({ messageId: 9, html: `${CARD}\n\n${r}` });
+    assert.equal(await applyJoinCardAction(deps, { ...base, action: "confirm" }), "state-changed", r);
+    assert.equal(edits.length, 0, r);
+  }
+  // Same marks in plain text (fallback from the message text).
+  const { deps } = setup();
+  assert.equal(
+    await applyJoinCardAction(deps, { ...base, action: "confirm", fallbackHtml: "Вход\n\n🔨 Забанен (fira)" }),
+    "state-changed",
+  );
 });
 
-test("stored card of another message: falls back to the button's message text", async () => {
-  const { edits, deps } = setup({ messageId: 1, html: "old card" });
-  await applyJoinCardAction(deps, {
-    prefix: "j",
-    action: "confirm",
-    userId: USER_ID,
-    messageId: 9,
-    fallbackHtml: "card text",
-  });
-  assert.ok(edits[0]!.text.startsWith("card text"));
+test("profile text can't fake a moderation mark (it is never at a paragraph start)", () => {
+  const html = `${CARD}\nОписание: hello 🔨 Забанен world · 🧹 Сообщения`;
+  assert.equal(hasModerationResult(html), false);
+});
+
+test("button on an old card doesn't steal the pointer to the latest card", async () => {
+  const { cards, deps } = setup({ messageId: 50, html: "latest card" });
+  await applyJoinCardAction(deps, { ...base, action: "confirm", fallbackHtml: "old card" });
+  assert.deepEqual(cards.get(USER_ID), { messageId: 50, html: "latest card" });
+});
+
+test("plain-text fallback: undo removes the footer", async () => {
+  const { edits, deps } = setup();
+  const plainConfirmed = "Вход в канал\n\n✅ Свой — проверил(а) Модератор.";
+  await applyJoinCardAction(deps, { ...base, action: "unconfirm", fallbackHtml: plainConfirmed });
+  assert.equal(edits[0]!.text, "Вход в канал");
 });
 
 test("'message is not modified' is not an error", async () => {
@@ -108,60 +112,34 @@ test("'message is not modified' is not an error", async () => {
   deps.api.editMessageText = async () => {
     throw Object.assign(new Error("400"), { description: "Bad Request: message is not modified" });
   };
-  await applyJoinCardAction(deps, { prefix: "j", action: "unconfirm", userId: USER_ID, messageId: 9, fallbackHtml: "x" });
+  assert.equal(await applyJoinCardAction(deps, { ...base, action: "unconfirm" }), "done");
 });
 
-test("race with a ban: ✅ is refused, 🔄 keeps the 🧹 buttons; wiped card gets no buttons", async () => {
-  const banned = `${CARD}
-
-🔨 <b>Забанен</b> (Модератор): удалён из чата и канала.`;
-  const { edits, deps } = setup({ messageId: 9, html: banned });
-  const wipe = { inline_keyboard: [[{ text: "🧹", callback_data: `j:w:${USER_ID}` }]] };
-  const stale = { inline_keyboard: [[{ text: "🔨", callback_data: `j:b:${USER_ID}` }]] };
-  const readProfile = async () => ({ user: { id: USER_ID, is_bot: false as const, first_name: "A" }, profileReadable: true });
-  const base = { prefix: "j" as const, userId: USER_ID, messageId: 9, fallbackHtml: "x", currentMarkup: stale, afterBanMarkup: wipe, readProfile };
-
-  assert.equal(await applyJoinCardAction(deps, { ...base, action: "confirm" }), "already-banned");
-  assert.equal(edits.length, 0);
-
-  await applyJoinCardAction(deps, { ...base, action: "refresh" });
-  assert.equal(edits[0]!.markup, wipe);
-  assert.match(edits[0]!.text, /Забанен/);
-
-  const { edits: e2, deps: d2 } = setup({ messageId: 9, html: `${banned}
-
-🧹 <b>Сообщения и реакции удалены</b>.` });
-  await applyJoinCardAction(d2, { ...base, action: "refresh" });
-  assert.equal(e2[0]!.markup, undefined);
-});
-
-test("button on an old card doesn't steal the pointer to the latest card", async () => {
-  const { cards, deps } = setup({ messageId: 50, html: "latest card" });
-  await applyJoinCardAction(deps, { prefix: "j", action: "confirm", userId: USER_ID, messageId: 9, fallbackHtml: "old card" });
-  assert.deepEqual(cards.get(USER_ID), { messageId: 50, html: "latest card" });
-});
-
-test("plain-text fallback: undo removes the footer, refreshes don't pile up, length capped", async () => {
-  const { edits, deps } = setup();
-  const plainConfirmed = "Вход в канал\n\n✅ Свой — проверил(а) Модератор.";
-  await applyJoinCardAction(deps, { prefix: "j", action: "unconfirm", userId: USER_ID, messageId: 9, fallbackHtml: plainConfirmed });
-  assert.equal(edits[0]!.text, "Вход в канал");
-
-  const readProfile = async () => ({ user: { id: USER_ID, is_bot: false as const, first_name: "A" }, profileReadable: true, bio: "б".repeat(200) });
-  let text = "Вход в канал";
-  for (let i = 0; i < 30; i++) {
-    // Each round: the card is rebuilt from its plain text (as Telegram returns it).
-    const { edits: e, deps: d } = setup();
-    await applyJoinCardAction(d, { prefix: "j", action: "refresh", userId: USER_ID, messageId: 9, fallbackHtml: text, readProfile });
-    text = e[0]!.text.replace(/<[^>]+>/g, "");
-  }
-  assert.equal(text.match(/Профиль сейчас/g)?.length, 1);
-  assert.ok(text.length < 4096);
-  assert.ok(edits.length === 1);
+test("🔄 posts the current profile as a reply under the card, with hints", async () => {
+  const sent: Array<{ chatId: number; text: string; other?: Record<string, unknown> }> = [];
+  const api = { sendMessage: async (chatId: number, text: string, other?: Record<string, unknown>) => void sent.push({ chatId, text, other }) };
+  await sendProfileRefresh(api, {
+    moderationChatId: MOD,
+    cardMessageId: 9,
+    now: new Date("2026-11-19T10:00:00Z"),
+    profile: {
+      user: { id: USER_ID, is_bot: false, first_name: "Катюша" },
+      profileReadable: true,
+      bio: "Мой канал 👉 https://t.me/+abc",
+    },
+  });
+  assert.equal(sent[0]!.chatId, MOD);
+  assert.deepEqual((sent[0]!.other?.reply_parameters as { message_id: number }).message_id, 9);
+  assert.match(sent[0]!.text, /🔄 <b>Профиль сейчас<\/b> \(10:00 UTC\)/);
+  assert.match(sent[0]!.text, /новый аккаунт/);
+  assert.match(sent[0]!.text, /ссылка на Telegram в описании/);
+  assert.ok(profileRefreshHtml({ user: { id: 1, is_bot: false, first_name: "<b>x</b>" }, profileReadable: false }).includes("&lt;b&gt;"));
 });
 
 test("hint regexes: no false positives on ordinary words", () => {
   assert.deepEqual(findHints(["Искупаться в море"]), []);
+  assert.deepEqual(findHints(["Скупой рыцарь"]), []);
+  assert.deepEqual(findHints(["Скупка аккаунтов"]), ["скуп аккаунтов"]);
   const u = (first_name: string): User => ({ id: 1, is_bot: false, first_name });
   assert.deepEqual(findProfileHints({ user: u("A"), profileReadable: true, bio: "about.me/alice" }), []);
   assert.deepEqual(findProfileHints({ user: u("Категорически против"), profileReadable: true }), []);

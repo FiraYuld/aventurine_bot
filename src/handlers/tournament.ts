@@ -1,14 +1,8 @@
 import type { Api, Bot } from "grammy";
 import { config } from "../config.js";
-import {
-  applyJoinCardAction,
-  buildJoinLogHtml,
-  isBan,
-  isJoin,
-  parseJoinCardCallback,
-  type JoinCardDeps,
-} from "../join-log.js";
-import { escapeHtml, logError } from "../logger.js";
+import { withCardLock } from "../card-lock.js";
+import { buildJoinLogHtml, isBan, isJoin } from "../join-log.js";
+import { logError } from "../logger.js";
 import { getRedis } from "../redis.js";
 import {
   guardNewcomerLink,
@@ -22,12 +16,11 @@ import {
   tournamentBan,
   tournamentUnmute,
   tournamentWipe,
-  wipeKeyboard,
   type TournamentCard,
   type TournamentDeps,
   type TournamentStore,
 } from "../tournament.js";
-import { isInside, readCurrentProfile, readProfile } from "./join-log.js";
+import { handleJoinCardButton, isInside, readProfile } from "./join-log.js";
 
 /**
  * Redis keys (separate from the discussion chat's joinmsg:/joinlog:):
@@ -139,7 +132,9 @@ export function registerTournament(bot: Bot): void {
     }
 
     try {
-      const res = await guardNewcomerLink(makeDeps(ctx.api, chatId), msg);
+      // Under the card lock: a "✅ Свой" pressed meanwhile is seen before anything is deleted.
+      const guard = () => guardNewcomerLink(makeDeps(ctx.api, chatId), msg);
+      const res = msg.from ? await withCardLock("t", msg.from.id, guard) : await guard();
       if (res.errors.length > 0) {
         await logError(ctx.api, `чат турниров: ссылка от ${msg.from?.id}`, res.errors.join("; "));
       }
@@ -157,11 +152,9 @@ export function registerTournament(bot: Bot): void {
     if (isBan(upd.old_chat_member, upd.new_chat_member)) {
       // Our own bans are handled by the button; a manual ban (a moderator, Iris…) is cleaned up here.
       if (upd.from.id === ctx.me.id) return;
-      const errors = await tournamentBan(makeDeps(ctx.api, chatId), user.id, {
-        by: upd.from,
-        user,
-        alreadyBanned: true,
-      });
+      const errors = await withCardLock("t", user.id, () =>
+        tournamentBan(makeDeps(ctx.api, chatId), user.id, { by: upd.from, user, alreadyBanned: true }),
+      );
       if (errors.length > 0) {
         await logError(ctx.api, `чат турниров: после бана ${user.id}`, errors.join("; "));
       }
@@ -190,7 +183,7 @@ export function registerTournament(bot: Bot): void {
         viaFolder: upd.via_chat_folder_invite_link,
         ...profile,
       });
-      await recordJoin(d, user, html);
+      await withCardLock("t", user.id, () => recordJoin(d, user, html));
     } catch (err) {
       console.error("[tournament] join log failed", { userId: user.id, err });
     }
@@ -198,51 +191,21 @@ export function registerTournament(bot: Bot): void {
 
   // "✅ Свой" / "↩️ Отменить" / "🔄 Профиль" on tournament cards.
   bot.callbackQuery(/^t:[orp]:\d+$/, async (ctx) => {
-    const parsed = parseJoinCardCallback(ctx.callbackQuery.data);
-    const msg = ctx.callbackQuery.message;
-    if (!parsed || !msg) {
-      await ctx.answerCallbackQuery().catch(() => {});
-      return;
-    }
-    const { action, userId } = parsed;
-    const label = { confirm: "Отмечаю как своего", unconfirm: "Возвращаю кнопки", refresh: "Читаю профиль…" }[action];
-    await ctx.answerCallbackQuery({ text: label }).catch(() => {});
     const store = storeFactory();
-    try {
-      const result = await applyJoinCardAction(
-        {
-          api: ctx.api as unknown as JoinCardDeps["api"],
-          getCard: (id) => store.getCard(id),
-          setCard: async (id, e) => {
-            const old = await store.getCard(id).catch(() => null);
-            await store.setCard(id, { ...old, ...e });
-          },
-          moderationChatId: config.moderationChatId,
-        },
-        {
-          prefix: "t",
-          action,
-          userId,
-          messageId: msg.message_id,
-          fallbackHtml: escapeHtml("text" in msg && msg.text ? msg.text : `ID ${userId}`),
-          by: ctx.from,
-          currentMarkup: "reply_markup" in msg ? msg.reply_markup : undefined,
-          afterBanMarkup: wipeKeyboard(userId),
-          readProfile: async () => {
-            const { current, ...profile } = await readCurrentProfile(ctx.api, userId);
-            return { user: current, ...profile };
-          },
-        },
-      );
-      // A confirmed person is not a newcomer, now or after a late join event: links stay.
-      if (result === "done" && action === "confirm") {
-        await store.setConfirmed(userId, true);
-        await store.clearJoined(userId);
-      }
-      if (result === "done" && action === "unconfirm") await store.setConfirmed(userId, false);
-    } catch (err) {
-      await logError(ctx.api, `чат турниров: кнопка ${action} (${userId})`, err);
-    }
+    await handleJoinCardButton(ctx, {
+      prefix: "t",
+      getCard: (id) => store.getCard(id),
+      setCard: async (id, e) => {
+        const old = await store.getCard(id).catch(() => null);
+        await store.setCard(id, { ...old, ...e });
+      },
+      // Inside the card lock: a confirmed person is never a newcomer again, so a link
+      // check waiting on the lock (or a late join event) leaves their messages alone.
+      onDone: async (action, userId) => {
+        await store.setConfirmed(userId, action === "confirm");
+        if (action === "confirm") await store.clearJoined(userId);
+      },
+    });
   });
 
   // Buttons on tournament cards (moderation chat only — enforced by scope middleware).
@@ -257,12 +220,13 @@ export function registerTournament(bot: Bot): void {
     await ctx.answerCallbackQuery({ text: label }).catch(() => {});
     const d = makeDeps(ctx.api, chatId);
     try {
-      const errors =
+      const errors = await withCardLock("t", userId, () =>
         action === "ban"
-          ? await tournamentBan(d, userId, { by: ctx.from })
+          ? tournamentBan(d, userId, { by: ctx.from })
           : action === "unmute"
-            ? await tournamentUnmute(d, userId, ctx.from)
-            : await tournamentWipe(d, userId, ctx.from);
+            ? tournamentUnmute(d, userId, ctx.from)
+            : tournamentWipe(d, userId, ctx.from),
+      );
       if (errors.length > 0) {
         await logError(ctx.api, `чат турниров: кнопка ${action} (${userId})`, errors.join("; "));
       }

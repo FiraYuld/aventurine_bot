@@ -60,6 +60,8 @@ export interface CleanupDeps {
   api: CleanupApi;
   store: CleanupStore;
   targets: CleanupTargets;
+  /** Per-user card lock (src/card-lock.ts); serializes card edits with ✅ Свой. */
+  lockCard?: <T>(userId: number, fn: () => Promise<T>) => Promise<T>;
 }
 
 export interface StepResult {
@@ -159,7 +161,8 @@ export async function runBanFollowUp(
   }
   if (joinIds.length > 0) await store.clearJoinMessageIds(userId).catch(() => {});
 
-  await step("отметка в чате модерации", async () => {
+  const lock = deps.lockCard ?? (<T>(_u: number, fn: () => Promise<T>) => fn());
+  await step("отметка в чате модерации", () => lock(userId, async () => {
     const entry = await store.getJoinLog(userId);
     const opts2 = {
       parse_mode: "HTML",
@@ -179,7 +182,7 @@ export async function runBanFollowUp(
       });
       await store.setJoinLog(userId, { messageId: sent.message_id, html });
     }
-  });
+  }));
 
   return { ran: true, errors };
 }
@@ -195,7 +198,8 @@ export async function runWipe(deps: CleanupDeps, userId: number, by?: User): Pro
   );
   await step("удаление реакций", () => api.deleteAllMessageReactionsUser(targets.chatId, userId));
 
-  await step("отметка в чате модерации", async () => {
+  const lock = deps.lockCard ?? (<T>(_u: number, fn: () => Promise<T>) => fn());
+  await step("отметка в чате модерации", () => lock(userId, async () => {
     const entry = await store.getJoinLog(userId);
     if (!entry) return;
     const tail = errors.length > 0 ? `\n⚠️ ${errors.map(escapeHtml).join("; ")}` : "";
@@ -209,7 +213,7 @@ export async function runWipe(deps: CleanupDeps, userId: number, by?: User): Pro
       reply_markup: { inline_keyboard: [] },
     });
     await store.setJoinLog(userId, { messageId: entry.messageId, html });
-  });
+  }));
 
   return { ran: true, errors };
 }

@@ -1,7 +1,8 @@
-import type { Api, Bot } from "grammy";
+import type { Api, Bot, CallbackQueryContext, Context } from "grammy";
+import { withCardLock } from "../card-lock.js";
 import type { User } from "grammy/types";
 import { config } from "../config.js";
-import { parseWipeCallback, runBanFollowUp, runWipe, wipeKeyboard } from "../ban-cleanup.js";
+import { parseWipeCallback, runBanFollowUp, runWipe } from "../ban-cleanup.js";
 import { cleanupDeps, rememberJoinLog, rememberJoinMessage } from "../ban-cleanup-store.js";
 import {
   applyJoinCardAction,
@@ -11,7 +12,9 @@ import {
   joinLogKeyboard,
   parseJoinBanCallback,
   parseJoinCardCallback,
+  sendProfileRefresh,
   type JoinCardDeps,
+  type JoinCardPrefix,
   type JoinLogInfo,
   type PersonalChannelInfo,
 } from "../join-log.js";
@@ -70,6 +73,71 @@ export async function readCurrentProfile(
   } catch (err) {
     console.error("[join-log] getChat(user) failed", { userId, err });
     return { profileReadable: false, current };
+  }
+}
+
+/**
+ * Shared handler of ✅ Свой / ↩️ Отменить / 🔄 Профиль for the discussion log (`j:`) and
+ * the tournament chat (`t:`). ✅/↩️ run under the per-user card lock; `onDone` runs inside
+ * it too (tournament: persist the confirmation). 🔄 only posts a reply.
+ */
+export async function handleJoinCardButton(
+  ctx: CallbackQueryContext<Context>,
+  opts: {
+    prefix: JoinCardPrefix;
+    getCard: JoinCardDeps["getCard"];
+    setCard: JoinCardDeps["setCard"];
+    onDone?: (action: "confirm" | "unconfirm", userId: number) => Promise<void>;
+  },
+): Promise<void> {
+  const parsed = parseJoinCardCallback(ctx.callbackQuery.data ?? "");
+  const msg = ctx.callbackQuery.message;
+  if (!parsed || parsed.prefix !== opts.prefix || !msg) {
+    await ctx.answerCallbackQuery().catch(() => {});
+    return;
+  }
+  const { action, userId } = parsed;
+  try {
+    if (action === "refresh") {
+      await ctx.answerCallbackQuery({ text: "Читаю профиль…" }).catch(() => {});
+      const { current, ...profile } = await readCurrentProfile(ctx.api, userId);
+      await sendProfileRefresh(ctx.api as unknown as Parameters<typeof sendProfileRefresh>[0], {
+        moderationChatId: config.moderationChatId,
+        cardMessageId: msg.message_id,
+        profile: { user: current, ...profile },
+      });
+      return;
+    }
+    const result = await withCardLock(opts.prefix, userId, async () => {
+      const r = await applyJoinCardAction(
+        {
+          api: ctx.api as unknown as JoinCardDeps["api"],
+          getCard: opts.getCard,
+          setCard: opts.setCard,
+          moderationChatId: config.moderationChatId,
+        },
+        {
+          prefix: opts.prefix,
+          action,
+          userId,
+          messageId: msg.message_id,
+          fallbackHtml: escapeHtml("text" in msg && msg.text ? msg.text : `ID ${userId}`),
+          by: ctx.from,
+        },
+      );
+      if (r === "done") await opts.onDone?.(action, userId);
+      return r;
+    });
+    const text =
+      result === "state-changed"
+        ? "Карточка уже изменилась (бан или ссылка) — ничего не трогаю"
+        : action === "confirm"
+          ? "Отмечено: свой"
+          : "Кнопки возвращены";
+    await ctx.answerCallbackQuery({ text }).catch(() => {});
+  } catch (err) {
+    await ctx.answerCallbackQuery().catch(() => {});
+    await logError(ctx.api, `кнопка карточки ${opts.prefix}:${action} (${userId})`, err);
   }
 }
 
@@ -144,7 +212,7 @@ export function registerJoinLog(bot: Bot): void {
         disable_notification: true,
         reply_markup: user.is_bot ? undefined : joinLogKeyboard(user.id),
       });
-      await rememberJoinLog(user.id, sent.message_id, html).catch((err) =>
+      await withCardLock("j", user.id, () => rememberJoinLog(user.id, sent.message_id, html)).catch((err) =>
         console.error("[join-log] remember log entry failed", err),
       );
     } catch (err) {
@@ -169,42 +237,12 @@ export function registerJoinLog(bot: Bot): void {
 
   // "✅ Свой" / "↩️ Отменить" / "🔄 Профиль" under a join-log entry.
   bot.callbackQuery(/^j:[orp]:\d+$/, async (ctx) => {
-    const parsed = parseJoinCardCallback(ctx.callbackQuery.data);
-    const msg = ctx.callbackQuery.message;
-    if (!parsed || !msg) {
-      await ctx.answerCallbackQuery().catch(() => {});
-      return;
-    }
-    const { action, userId } = parsed;
-    const label = { confirm: "Отмечаю как своего", unconfirm: "Возвращаю кнопки", refresh: "Читаю профиль…" }[action];
-    await ctx.answerCallbackQuery({ text: label }).catch(() => {});
     const store = cleanupDeps(ctx.api).store;
-    try {
-      await applyJoinCardAction(
-        {
-          api: ctx.api as unknown as JoinCardDeps["api"],
-          getCard: (id) => store.getJoinLog(id),
-          setCard: (id, e) => store.setJoinLog(id, e),
-          moderationChatId: config.moderationChatId,
-        },
-        {
-          prefix: "j",
-          action,
-          userId,
-          messageId: msg.message_id,
-          fallbackHtml: escapeHtml("text" in msg && msg.text ? msg.text : `ID ${userId}`),
-          by: ctx.from,
-          currentMarkup: "reply_markup" in msg ? msg.reply_markup : undefined,
-          afterBanMarkup: wipeKeyboard(userId),
-          readProfile: async () => {
-            const { current, ...profile } = await readCurrentProfile(ctx.api, userId);
-            return { user: current, ...profile };
-          },
-        },
-      );
-    } catch (err) {
-      await logError(ctx.api, `кнопка журнала входов ${action} (${userId})`, err);
-    }
+    await handleJoinCardButton(ctx, {
+      prefix: "j",
+      getCard: (id) => store.getJoinLog(id),
+      setCard: (id, e) => store.setJoinLog(id, e),
+    });
   });
 
   // "🧹 Удалить сообщения и реакции": the only place where a user's content is wiped.
