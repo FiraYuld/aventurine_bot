@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Update } from "grammy/types";
 import { getBot } from "../../src/bot.js";
+import { setCardLockForTests } from "../../src/card-lock.js";
 import { setTournamentStoreForTests } from "../../src/handlers/tournament.js";
 import type { TournamentCard, TournamentStore } from "../../src/tournament.js";
 
@@ -24,6 +25,7 @@ const USER = { id: 777, is_bot: false as const, first_name: "Скуп аккау
 const joined = new Map<number, number>();
 const cards = new Map<number, TournamentCard>();
 const linkClaimed = new Set<number>();
+const confirmed = new Set<number>();
 const store: TournamentStore = {
   async getJoinedAt(id) {
     return joined.get(id) ?? null;
@@ -43,6 +45,13 @@ const store: TournamentStore = {
   async hasLinkCard(id) {
     return linkClaimed.has(id);
   },
+  async isConfirmed(id) {
+    return confirmed.has(id);
+  },
+  async setConfirmed(id, on) {
+    if (on) confirmed.add(id);
+    else confirmed.delete(id);
+  },
   async getCard(id) {
     return cards.get(id) ?? null;
   },
@@ -55,6 +64,24 @@ const store: TournamentStore = {
   },
 };
 setTournamentStoreForTests(() => store);
+
+// In-memory per-key mutex standing in for the Redis card lock.
+const chains = new Map<string, Promise<void>>();
+setCardLockForTests(async (key, fn) => {
+  const prev = chains.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((r) => (release = r));
+  chains.set(key, prev.then(() => mine));
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+});
+
+/** Telegram methods that wait for a test-controlled gate before answering. */
+const gates = new Map<string, Promise<void>>();
 
 const calls: Array<{ method: string; payload: Record<string, unknown> }> = [];
 const bot = getBot();
@@ -72,6 +99,8 @@ bot.botInfo = {
 // Every Telegram call is intercepted: nothing leaves the process.
 bot.api.config.use(async (_prev, method, payload) => {
   calls.push({ method, payload: payload as Record<string, unknown> });
+  const gate = gates.get(method);
+  if (gate) await gate;
   const result: unknown =
     method === "sendMessage"
       ? { message_id: 900, date: 0, chat: { id: MOD, type: "supergroup" } }
@@ -122,6 +151,37 @@ test("link from the newcomer: deleted and muted in the tournament chat only", as
   assert.ok(!calls.some((c) => c.payload.chat_id === -100300 || c.payload.chat_id === -100200));
 });
 
+test("✅ Свой on a tournament card: card edited without the ban button, newcomer marker cleared", async () => {
+  joined.set(USER.id, 0);
+  // A clean join card (the earlier test left a link result, which correctly blocks "Свой").
+  cards.set(USER.id, { messageId: 900, html: "👤 Вход в чат турниров", at: 0 });
+  calls.length = 0;
+  await bot.handleUpdate({
+    update_id: 4,
+    callback_query: {
+      id: "cq",
+      from: { id: 1, is_bot: false, first_name: "Модератор" },
+      chat_instance: "x",
+      data: `t:o:${USER.id}`,
+      message: { message_id: 900, date: 0, chat: { id: MOD, type: "supergroup" }, text: "👤 Вход в чат турниров" },
+    },
+  } as unknown as Update);
+  const edit = calls.find((c) => c.method === "editMessageText");
+  assert.ok(edit, "card edited (callback reached the tournament handler, not the catch-all)");
+  assert.match(String(edit.payload.text), /Свой/);
+  const data = JSON.stringify(edit.payload.reply_markup);
+  assert.ok(!data.includes(`t:b:${USER.id}`) && data.includes(`t:r:${USER.id}`));
+  assert.equal(joined.has(USER.id), false);
+  assert.equal(confirmed.has(USER.id), true);
+
+  // A late "joined" service message for the same join: still not a newcomer.
+  await bot.handleUpdate({
+    update_id: 5,
+    message: { message_id: 12, date: 0, chat: { id: TOUR, type: "supergroup" }, from: USER, new_chat_members: [USER] },
+  } as unknown as Update);
+  assert.equal(joined.has(USER.id), false);
+});
+
 test("ordinary message in the tournament chat: no action", async () => {
   calls.length = 0;
   await bot.handleUpdate({
@@ -135,4 +195,64 @@ test("ordinary message in the tournament chat: no action", async () => {
     },
   } as unknown as Update);
   assert.deepEqual(calls, []);
+});
+
+const cardUpdate = (id: number, data: string) =>
+  ({
+    update_id: id,
+    callback_query: {
+      id: `cq${id}`,
+      from: { id: 1, is_bot: false, first_name: "Модератор" },
+      chat_instance: "x",
+      data,
+      message: { message_id: 900, date: 0, chat: { id: MOD, type: "supergroup" }, text: "👤 Вход в чат турниров" },
+    },
+  }) as unknown as Update;
+
+const linkUpdate = (id: number, from = USER2) =>
+  ({
+    update_id: id,
+    message: { message_id: id, date: 0, chat: { id: TOUR, type: "supergroup" }, from, text: "тут: t.me/+FakeInviteCode" },
+  }) as unknown as Update;
+
+const USER2 = { id: 778, is_bot: false as const, first_name: "Новичок" };
+
+function resetUser2() {
+  joined.set(USER2.id, 0);
+  confirmed.delete(USER2.id);
+  linkClaimed.delete(USER2.id);
+  cards.set(USER2.id, { messageId: 900, html: "👤 Вход в чат турниров", at: 0 });
+  calls.length = 0;
+}
+
+test("race: ✅ Свой first, link check waits on the lock and then leaves the message alone", async () => {
+  resetUser2();
+  let open!: () => void;
+  gates.set("editMessageText", new Promise<void>((r) => (open = r)));
+  const confirm = bot.handleUpdate(cardUpdate(20, `t:o:${USER2.id}`));
+  await new Promise((r) => setTimeout(r, 20)); // confirm holds the lock, stuck in the edit
+  const link = bot.handleUpdate(linkUpdate(21));
+  await new Promise((r) => setTimeout(r, 20));
+  gates.delete("editMessageText");
+  open();
+  await Promise.all([confirm, link]);
+  assert.equal(confirmed.has(USER2.id), true);
+  assert.ok(!calls.some((c) => c.method === "deleteMessage" || c.method === "restrictChatMember"));
+});
+
+test("race: link check first, ✅ Свой waits and then refuses (card shows the link result)", async () => {
+  resetUser2();
+  let open!: () => void;
+  gates.set("getChatMember", new Promise<void>((r) => (open = r)));
+  const link = bot.handleUpdate(linkUpdate(30));
+  await new Promise((r) => setTimeout(r, 20)); // guard holds the lock, stuck in getChatMember
+  const confirm = bot.handleUpdate(cardUpdate(31, `t:o:${USER2.id}`));
+  await new Promise((r) => setTimeout(r, 20));
+  gates.delete("getChatMember");
+  open();
+  await Promise.all([link, confirm]);
+  assert.ok(calls.some((c) => c.method === "restrictChatMember"));
+  assert.equal(confirmed.has(USER2.id), false, "no 'Свой' on a muted person's card");
+  assert.match(cards.get(USER2.id)!.html, /Ссылка от новичка/);
+  assert.doesNotMatch(cards.get(USER2.id)!.html, /Свой/);
 });

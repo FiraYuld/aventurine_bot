@@ -1,5 +1,6 @@
 import { InlineKeyboard } from "grammy";
 import type { ChatPermissions, Message, MessageEntity, User } from "grammy/types";
+import { joinCardCallbackData, joinLogKeyboard } from "./join-log.js";
 import { escapeHtml } from "./logger.js";
 
 /**
@@ -58,14 +59,17 @@ export function parseTournamentCallback(
   return { action, userId };
 }
 
+/** 🔨 ban, ✅ Свой (t:o), 🔄 profile (t:p) — same layout as the discussion join log. */
 export function joinKeyboard(userId: number): InlineKeyboard {
-  return new InlineKeyboard().text("🔨 Забанить", tournamentCallbackData("ban", userId));
+  return joinLogKeyboard(userId, "t");
 }
 
 export function mutedKeyboard(userId: number): InlineKeyboard {
   return new InlineKeyboard()
     .text("🔨 Забанить", tournamentCallbackData("ban", userId))
-    .text("✅ Размутить", tournamentCallbackData("unmute", userId));
+    .text("✅ Размутить", tournamentCallbackData("unmute", userId))
+    .row()
+    .text("🔄 Профиль", joinCardCallbackData("refresh", userId, "t"));
 }
 
 export function wipeKeyboard(userId: number): InlineKeyboard {
@@ -176,6 +180,9 @@ export interface TournamentStore {
   claimLinkCard(userId: number): Promise<boolean>;
   /** Is the link-card slot taken (a link card was posted for the current stay)? */
   hasLinkCard(userId: number): Promise<boolean>;
+  /** "✅ Свой": a moderator vouched for this person; never treat them as a newcomer. */
+  isConfirmed(userId: number): Promise<boolean>;
+  setConfirmed(userId: number, confirmed: boolean): Promise<void>;
   getCard(userId: number): Promise<TournamentCard | null>;
   setCard(userId: number, card: TournamentCard): Promise<void>;
   addJoinMessage(userId: number, messageId: number): Promise<void>;
@@ -188,6 +195,8 @@ export interface TournamentDeps {
   tournamentChatId: number;
   moderationChatId: number;
   now?: () => number;
+  /** Tests only: override GUARD_MAX_MS. */
+  guardMaxMs?: number;
 }
 
 function errText(err: unknown): string {
@@ -236,6 +245,8 @@ async function updateCard(
 }
 
 const ADMIN_STATUSES = new Set(["creator", "administrator"]);
+/** Link guard gives up before deleting if the admin check alone took this long. */
+export const GUARD_MAX_MS = 4_000;
 
 export interface LinkGuardResult {
   acted: boolean;
@@ -253,14 +264,24 @@ export async function guardNewcomerLink(deps: TournamentDeps, msg: Message): Pro
   if (!reason) return { acted: false, errors: [] };
 
   const { api, store, tournamentChatId } = deps;
+  // Lock lease is 8 s; everything up to the delete must fit well inside it.
+  const started = Date.now();
+  const tooSlow = () => Date.now() - started > (deps.guardMaxMs ?? GUARD_MAX_MS);
   const joinedAt = await store.getJoinedAt(user.id);
   if (joinedAt === null) return { acted: false, errors: [] };
+  if (await store.isConfirmed(user.id)) return { acted: false, errors: [] };
 
   try {
     const m = await api.getChatMember(tournamentChatId, user.id);
     if (ADMIN_STATUSES.has(m.status)) return { acted: false, errors: [] };
   } catch {
     // Can't check: a just-joined account is almost never an admin, keep going.
+  }
+  // Re-check the confirmation right before the irreversible delete, and don't act late:
+  // after a slow Telegram/Redis call the lease may be gone and "Свой" may have landed.
+  if (await store.isConfirmed(user.id)) return { acted: false, errors: [] };
+  if (tooSlow()) {
+    return { acted: false, errors: ["проверка ссылки заняла слишком долго — сообщение не тронуто"] };
   }
 
   const errors: string[] = [];
@@ -302,6 +323,8 @@ export async function guardNewcomerLink(deps: TournamentDeps, msg: Message): Pro
 
 /** First thing on a join (before slow profile reads), so an instant link is still caught. */
 export async function markNewcomer(deps: TournamentDeps, userId: number): Promise<void> {
+  // A late or repeated join event must not turn a confirmed person back into a newcomer.
+  if (await deps.store.isConfirmed(userId)) return;
   await deps.store.markJoined(userId, nowSec(deps));
 }
 

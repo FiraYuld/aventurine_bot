@@ -148,3 +148,17 @@ test("wipe callback data round-trips", () => {
   assert.equal(parseWipeCallback(wipeCallbackData(777)), 777);
   assert.equal(parseWipeCallback("j:b:777"), null);
 });
+
+test("card lock busy after a ban: fallback card with 🧹 is still posted, error reported", async () => {
+  const api = new FakeApi();
+  const store = new FakeStore();
+  const lockCard = async () => {
+    throw new Error("card lock busy");
+  };
+  const res = await runBanFollowUp({ api, store, targets, lockCard }, USER);
+  assert.ok(api.calls.includes(`ban:${CHAT}:${USER}`), "ban done");
+  assert.ok(api.calls.includes(`send:${MOD}`), "fallback card posted");
+  assert.match(api.lastText, /Забанен/);
+  assert.equal(JSON.stringify(api.lastMarkup).includes(`j:w:${USER}`), true);
+  assert.ok(res.errors.some((e) => /отметка/.test(e)));
+});

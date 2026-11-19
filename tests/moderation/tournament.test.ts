@@ -4,6 +4,7 @@ import type { ChatPermissions, Message, User } from "grammy/types";
 import {
   findLinkReason,
   guardNewcomerLink,
+  markNewcomer,
   parseTournamentCallback,
   recordJoin,
   tournamentBan,
@@ -83,6 +84,14 @@ class FakeStore implements TournamentStore {
   }
   async hasLinkCard(userId: number) {
     return this.linkClaimed.has(userId);
+  }
+  confirmed = new Set<number>();
+  async isConfirmed(userId: number) {
+    return this.confirmed.has(userId);
+  }
+  async setConfirmed(userId: number, on: boolean) {
+    if (on) this.confirmed.add(userId);
+    else this.confirmed.delete(userId);
   }
   async claimLinkCard(userId: number) {
     if (this.linkClaimed.has(userId)) return false;
@@ -177,7 +186,7 @@ test("newcomer link: delete, mute, one card with ban/unmute; copies only deleted
   assert.equal(api.calls.filter((c) => c.startsWith("send:")).length, 1);
   assert.match(api.lastText, /Ссылка от новичка/);
   assert.match(api.lastText, /сообщение удалено, замучен/);
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
 
   // Second copy (Telegram delivers in parallel): deleted, no second card.
   api.calls = [];
@@ -202,13 +211,13 @@ test("link card is appended to the join-log card", async () => {
   const { api, store, deps } = setup();
   await store.markJoined(SPAMMER.id, NOW);
   await recordJoin(deps, SPAMMER, "👤 <b>Вход в чат турниров</b>");
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:o:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
   const cardId = store.cards.get(SPAMMER.id)!.messageId;
 
   await guardNewcomerLink(deps, spamMessage());
   assert.ok(api.calls.includes(`edit:${MOD}:${cardId}`));
   assert.match(api.lastText, /Вход в чат турниров[\s\S]*Ссылка от новичка/);
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
 });
 
 test("link beats the join log: join details go under the link card, buttons kept", async () => {
@@ -220,7 +229,7 @@ test("link beats the join log: join details go under the link card, buttons kept
   await recordJoin(deps, SPAMMER, "👤 <b>Вход в чат турниров</b>");
   assert.equal(api.calls.filter((c) => c.startsWith("send:")).length, 1);
   assert.ok(api.calls.includes(`edit:${MOD}:${cardId}`));
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:u:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
 });
 
 test("quick re-join without a link: plain join card, no unmute button", async () => {
@@ -229,7 +238,7 @@ test("quick re-join without a link: plain join card, no unmute button", async ()
   await recordJoin(deps, SPAMMER, "👤 вход 1");
   await recordJoin(deps, SPAMMER, "👤 вход 2");
   assert.equal(api.calls.filter((c) => c.startsWith("send:")).length, 2);
-  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`]);
+  assert.deepEqual(buttons(api.lastMarkup), [`t:b:${SPAMMER.id}`, `t:o:${SPAMMER.id}`, `t:p:${SPAMMER.id}`]);
 });
 
 test("after an unmute a new link from the same person gets a fresh card", async () => {
@@ -241,6 +250,38 @@ test("after an unmute a new link from the same person gets a fresh card", async 
   api.calls = [];
   await guardNewcomerLink(deps, spamMessage(12));
   assert.ok(api.calls.some((c) => c.startsWith("edit:") || c.startsWith("send:")));
+});
+
+test("confirmed person: a late join event doesn't make them a newcomer, links stay", async () => {
+  const { api, store, deps } = setup();
+  store.confirmed.add(SPAMMER.id);
+  await markNewcomer(deps, SPAMMER.id);
+  assert.equal(store.joined.has(SPAMMER.id), false);
+  store.joined.set(SPAMMER.id, NOW); // even if the marker exists somehow
+  assert.equal((await guardNewcomerLink(deps, spamMessage())).acted, false);
+  assert.ok(!api.calls.some((c) => c.startsWith("delete:") || c.startsWith("restrict:")));
+});
+
+test("slow admin check: guard gives up before deleting; confirmation re-checked before delete", async () => {
+  const { api, store, deps } = setup();
+  store.joined.set(SPAMMER.id, NOW);
+  const slow = { ...deps, guardMaxMs: 10 };
+  api.getChatMember = async () => {
+    await new Promise((r) => setTimeout(r, 30));
+    return { status: "member" };
+  };
+  const r = await guardNewcomerLink(slow, spamMessage());
+  assert.equal(r.acted, false);
+  assert.match(r.errors[0] ?? "", /слишком долго/);
+  assert.ok(!api.calls.some((c) => c.startsWith("delete:") || c.startsWith("restrict:")));
+
+  // Confirmed while the admin check was running → nothing deleted.
+  api.getChatMember = async () => {
+    store.confirmed.add(SPAMMER.id);
+    return { status: "member" };
+  };
+  assert.equal((await guardNewcomerLink(deps, spamMessage())).acted, false);
+  assert.ok(!api.calls.some((c) => c.startsWith("delete:") || c.startsWith("restrict:")));
 });
 
 test("ban button: ban only in the tournament chat, delete join message, offer 🧹", async () => {

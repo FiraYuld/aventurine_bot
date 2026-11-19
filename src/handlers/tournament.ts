@@ -1,10 +1,12 @@
 import type { Api, Bot } from "grammy";
 import { config } from "../config.js";
+import { withCardLock } from "../card-lock.js";
 import { buildJoinLogHtml, isBan, isJoin } from "../join-log.js";
 import { logError } from "../logger.js";
 import { getRedis } from "../redis.js";
 import {
   guardNewcomerLink,
+  joinKeyboard,
   LINK_CARD_TTL_SEC,
   markNewcomer,
   NEWCOMER_WINDOW_SEC,
@@ -19,7 +21,7 @@ import {
   type TournamentDeps,
   type TournamentStore,
 } from "../tournament.js";
-import { isInside, readProfile } from "./join-log.js";
+import { handleJoinCardButton, isInside, readProfile } from "./join-log.js";
 
 /**
  * Redis keys (separate from the discussion chat's joinmsg:/joinlog:):
@@ -27,6 +29,7 @@ import { isInside, readProfile } from "./join-log.js";
  *   tlink:<uid>    — one link card per user (24 h)
  *   tcard:<uid>    — moderation-chat card + its HTML (14 days)
  *   tjoinmsg:<uid> — "… joined the group" service message ids (48 h)
+ *   tok:<uid>      — "✅ Свой": never a newcomer again (180 days)
  */
 function createStore(): TournamentStore {
   const r = getRedis();
@@ -48,6 +51,13 @@ function createStore(): TournamentStore {
     },
     async hasLinkCard(userId) {
       return (await r.exists(`tlink:${userId}`)) > 0;
+    },
+    async isConfirmed(userId) {
+      return (await r.exists(`tok:${userId}`)) > 0;
+    },
+    async setConfirmed(userId, confirmed) {
+      if (confirmed) await r.set(`tok:${userId}`, "1", { ex: TOURNAMENT_CONFIRMED_TTL_SEC });
+      else await r.del(`tok:${userId}`);
     },
     async getCard(userId) {
       const raw: unknown = await r.get(`tcard:${userId}`);
@@ -78,6 +88,8 @@ function createStore(): TournamentStore {
     },
   };
 }
+
+const TOURNAMENT_CONFIRMED_TTL_SEC = 180 * 24 * 60 * 60;
 
 let storeFactory: () => TournamentStore = createStore;
 
@@ -121,12 +133,15 @@ export function registerTournament(bot: Bot): void {
     }
 
     try {
-      const res = await guardNewcomerLink(makeDeps(ctx.api, chatId), msg);
+      // Under the card lock: a "✅ Свой" pressed meanwhile is seen before anything is deleted.
+      const guard = () => guardNewcomerLink(makeDeps(ctx.api, chatId), msg);
+      const res = msg.from ? await withCardLock("t", msg.from.id, guard) : await guard();
       if (res.errors.length > 0) {
         await logError(ctx.api, `чат турниров: ссылка от ${msg.from?.id}`, res.errors.join("; "));
       }
     } catch (err) {
-      await logError(ctx.api, `чат турниров: проверка сообщения ${msg.message_id}`, err);
+      // Lock busy / Redis down: nothing was deleted (strict lock) — safe default.
+      await logError(ctx.api, `чат турниров: проверка сообщения ${msg.message_id} (не тронуто)`, err);
     }
     // Nothing else handles the tournament chat: no next().
   });
@@ -139,11 +154,9 @@ export function registerTournament(bot: Bot): void {
     if (isBan(upd.old_chat_member, upd.new_chat_member)) {
       // Our own bans are handled by the button; a manual ban (a moderator, Iris…) is cleaned up here.
       if (upd.from.id === ctx.me.id) return;
-      const errors = await tournamentBan(makeDeps(ctx.api, chatId), user.id, {
-        by: upd.from,
-        user,
-        alreadyBanned: true,
-      });
+      const errors = await withCardLock("t", user.id, () =>
+        tournamentBan(makeDeps(ctx.api, chatId), user.id, { by: upd.from, user, alreadyBanned: true }),
+      );
       if (errors.length > 0) {
         await logError(ctx.api, `чат турниров: после бана ${user.id}`, errors.join("; "));
       }
@@ -172,10 +185,39 @@ export function registerTournament(bot: Bot): void {
         viaFolder: upd.via_chat_folder_invite_link,
         ...profile,
       });
-      await recordJoin(d, user, html);
+      await withCardLock("t", user.id, () => recordJoin(d, user, html)).catch(async (err) => {
+        // Lock busy: still post the join card, just without the shared pointer.
+        console.error("[tournament] join card without lock", { userId: user.id, err });
+        await ctx.api.sendMessage(config.moderationChatId, html, {
+          parse_mode: "HTML",
+          link_preview_options: { is_disabled: true },
+          disable_notification: true,
+          reply_markup: user.is_bot ? undefined : joinKeyboard(user.id),
+        });
+      });
     } catch (err) {
       console.error("[tournament] join log failed", { userId: user.id, err });
     }
+  });
+
+  // "✅ Свой" / "↩️ Отменить" / "🔄 Профиль" on tournament cards.
+  bot.callbackQuery(/^t:[orp]:\d+$/, async (ctx) => {
+    const store = storeFactory();
+    await handleJoinCardButton(ctx, {
+      prefix: "t",
+      getCard: (id) => store.getCard(id),
+      setCard: async (id, e) => {
+        const old = await store.getCard(id).catch(() => null);
+        await store.setCard(id, { ...old, ...e });
+      },
+      // Inside the card lock and before the card shows "Свой": a confirmed person is never
+      // a newcomer again, so a link check waiting on the lock (or a late join) leaves them be.
+      // Unconfirm drops the protection first; if that fails the card keeps showing "Свой".
+      beforeEdit: async (action, userId) => {
+        await store.setConfirmed(userId, action === "confirm");
+        if (action === "confirm") await store.clearJoined(userId);
+      },
+    });
   });
 
   // Buttons on tournament cards (moderation chat only — enforced by scope middleware).
@@ -190,12 +232,13 @@ export function registerTournament(bot: Bot): void {
     await ctx.answerCallbackQuery({ text: label }).catch(() => {});
     const d = makeDeps(ctx.api, chatId);
     try {
-      const errors =
+      const errors = await withCardLock("t", userId, () =>
         action === "ban"
-          ? await tournamentBan(d, userId, { by: ctx.from })
+          ? tournamentBan(d, userId, { by: ctx.from })
           : action === "unmute"
-            ? await tournamentUnmute(d, userId, ctx.from)
-            : await tournamentWipe(d, userId, ctx.from);
+            ? tournamentUnmute(d, userId, ctx.from)
+            : tournamentWipe(d, userId, ctx.from),
+      );
       if (errors.length > 0) {
         await logError(ctx.api, `чат турниров: кнопка ${action} (${userId})`, errors.join("; "));
       }

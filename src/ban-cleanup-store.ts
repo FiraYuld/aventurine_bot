@@ -6,6 +6,7 @@ import {
   type CleanupDeps,
   type CleanupStore,
 } from "./ban-cleanup.js";
+import { withCardLock } from "./card-lock.js";
 import { config } from "./config.js";
 import { getRedis } from "./redis.js";
 
@@ -77,5 +78,6 @@ export function cleanupDeps(api: Api): CleanupDeps {
       channelId: config.channelId,
       moderationChatId: config.moderationChatId,
     },
+    lockCard: (userId, fn) => withCardLock("j", userId, fn),
   };
 }

@@ -4,6 +4,7 @@ import type { ChatMember, User } from "grammy/types";
 import {
   buildJoinLogHtml,
   findHints,
+  findProfileHints,
   isBan,
   isJoin,
   joinBanCallbackData,
@@ -32,6 +33,29 @@ test("hints flag typical spam profile wording", () => {
   assert.deepEqual(findHints(["Девочки 18+ 🔞", undefined]), ["18+"]);
   assert.deepEqual(findHints(["Заработок на крипте"]), ["заработок/крипта"]);
   assert.deepEqual(findHints(["Сонный уголок", "любит котиков"]), []);
+  assert.deepEqual(findHints(["Model", "See more of me 🩷"]), ["18+"]);
+  assert.deepEqual(findHints(["Скуп игр,ZZZ"]), ["скуп аккаунтов"]);
+  assert.deepEqual(findHints(["Продать свой аккаунт в Геншине"]), ["скуп аккаунтов"]);
+  assert.deepEqual(findHints(["Продать акк тут 👉"]), ["скуп аккаунтов"]);
+  assert.deepEqual(findHints(["Секретный Переходник"]), ["канал-переходник"]);
+  assert.deepEqual(findHints(["Игровой канал | Genshin & HSR", "Делюсь новостями: Genshin, HSR, ZZZ"]), []);
+});
+
+test("profile hints: Telegram link in bio, Katya botnet shape", () => {
+  const base = { profileReadable: true } as const;
+  const u = (first_name: string, username?: string): User => ({ id: 1, is_bot: false, first_name, username });
+  assert.deepEqual(findProfileHints({ ...base, user: u("Seller", "s"), bio: "Продать тут 👉 https://t.me/some_bot?start=x" }), [
+    "ссылка на Telegram в описании",
+  ]);
+  assert.deepEqual(findProfileHints({ ...base, user: u("Ariana", "a"), bio: "instagram.com/x | vk.com/x" }), []);
+  for (const name of ["Катюша ❤️", "Katyusha darling 🖤", "Катенька лапочка 😍", "Ekaterina princess", "Катеришка малышка"]) {
+    assert.deepEqual(findProfileHints({ ...base, user: u(name) }), ["похож на сеть «Кать» (пустой профиль)"], name);
+  }
+  // Same name but a real-looking profile (username or bio) → nothing.
+  assert.deepEqual(findProfileHints({ ...base, user: u("Катя", "katya_real") }), []);
+  assert.deepEqual(findProfileHints({ ...base, user: u("Катя"), bio: "рисую" }), []);
+  // Profile not readable → can't say it's empty.
+  assert.deepEqual(findProfileHints({ profileReadable: false, user: u("Катюша") }), []);
 });
 
 test("log entry shows id, profile channel and hints, HTML-escaped", () => {
