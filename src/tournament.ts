@@ -195,6 +195,8 @@ export interface TournamentDeps {
   tournamentChatId: number;
   moderationChatId: number;
   now?: () => number;
+  /** Tests only: override GUARD_MAX_MS. */
+  guardMaxMs?: number;
 }
 
 function errText(err: unknown): string {
@@ -243,6 +245,8 @@ async function updateCard(
 }
 
 const ADMIN_STATUSES = new Set(["creator", "administrator"]);
+/** Link guard gives up before deleting if the admin check alone took this long. */
+export const GUARD_MAX_MS = 4_000;
 
 export interface LinkGuardResult {
   acted: boolean;
@@ -264,12 +268,19 @@ export async function guardNewcomerLink(deps: TournamentDeps, msg: Message): Pro
   if (joinedAt === null) return { acted: false, errors: [] };
   if (await store.isConfirmed(user.id)) return { acted: false, errors: [] };
 
+  const started = Date.now();
   try {
     const m = await api.getChatMember(tournamentChatId, user.id);
     if (ADMIN_STATUSES.has(m.status)) return { acted: false, errors: [] };
   } catch {
     // Can't check: a just-joined account is almost never an admin, keep going.
   }
+  // Slow Telegram: the card lock (8 s lease) may be about to expire. Don't act late —
+  // re-check the confirmation right before the irreversible delete.
+  if (Date.now() - started > (deps.guardMaxMs ?? GUARD_MAX_MS)) {
+    return { acted: false, errors: ["проверка ссылки заняла слишком долго — сообщение не тронуто"] };
+  }
+  if (await store.isConfirmed(user.id)) return { acted: false, errors: [] };
 
   const errors: string[] = [];
   let deleted = true;

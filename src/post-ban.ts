@@ -82,9 +82,7 @@ export async function executeReactionBan(params: {
       html,
       params.replaceModerationMessageId,
     );
-    await withCardLock("j", params.userId, () => rememberJoinLog(params.userId, logMessageId, html), {
-      bestEffort: true,
-    });
+    await withCardLock("j", params.userId, () => rememberJoinLog(params.userId, logMessageId, html));
   } catch (err) {
     console.error("Не удалось отправить лог бана в чат модерации:", err);
   }

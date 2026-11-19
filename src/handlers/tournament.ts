@@ -200,9 +200,10 @@ export function registerTournament(bot: Bot): void {
         const old = await store.getCard(id).catch(() => null);
         await store.setCard(id, { ...old, ...e });
       },
-      // Inside the card lock: a confirmed person is never a newcomer again, so a link
-      // check waiting on the lock (or a late join event) leaves their messages alone.
-      onDone: async (action, userId) => {
+      // Inside the card lock and before the card shows "Свой": a confirmed person is never
+      // a newcomer again, so a link check waiting on the lock (or a late join) leaves them be.
+      // Unconfirm drops the protection first; if that fails the card keeps showing "Свой".
+      beforeEdit: async (action, userId) => {
         await store.setConfirmed(userId, action === "confirm");
         if (action === "confirm") await store.clearJoined(userId);
       },

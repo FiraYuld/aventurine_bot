@@ -107,6 +107,22 @@ test("plain-text fallback: undo removes the footer", async () => {
   assert.equal(edits[0]!.text, "Вход в канал");
 });
 
+test("beforeEdit failure (e.g. Redis) leaves the card unchanged: never 'Свой' without protection", async () => {
+  const { cards, edits, deps } = setup({ messageId: 9, html: CARD });
+  await assert.rejects(
+    applyJoinCardAction(deps, {
+      ...base,
+      prefix: "t",
+      action: "confirm",
+      beforeEdit: async () => {
+        throw new Error("redis down");
+      },
+    }),
+  );
+  assert.equal(edits.length, 0);
+  assert.equal(cards.get(USER_ID)!.html, CARD);
+});
+
 test("'message is not modified' is not an error", async () => {
   const { deps } = setup({ messageId: 9, html: CARD });
   deps.api.editMessageText = async () => {

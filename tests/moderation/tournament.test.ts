@@ -262,6 +262,28 @@ test("confirmed person: a late join event doesn't make them a newcomer, links st
   assert.ok(!api.calls.some((c) => c.startsWith("delete:") || c.startsWith("restrict:")));
 });
 
+test("slow admin check: guard gives up before deleting; confirmation re-checked before delete", async () => {
+  const { api, store, deps } = setup();
+  store.joined.set(SPAMMER.id, NOW);
+  const slow = { ...deps, guardMaxMs: 10 };
+  api.getChatMember = async () => {
+    await new Promise((r) => setTimeout(r, 30));
+    return { status: "member" };
+  };
+  const r = await guardNewcomerLink(slow, spamMessage());
+  assert.equal(r.acted, false);
+  assert.match(r.errors[0] ?? "", /слишком долго/);
+  assert.ok(!api.calls.some((c) => c.startsWith("delete:") || c.startsWith("restrict:")));
+
+  // Confirmed while the admin check was running → nothing deleted.
+  api.getChatMember = async () => {
+    store.confirmed.add(SPAMMER.id);
+    return { status: "member" };
+  };
+  assert.equal((await guardNewcomerLink(deps, spamMessage())).acted, false);
+  assert.ok(!api.calls.some((c) => c.startsWith("delete:") || c.startsWith("restrict:")));
+});
+
 test("ban button: ban only in the tournament chat, delete join message, offer 🧹", async () => {
   const { api, store, deps } = setup();
   store.joined.set(SPAMMER.id, NOW);

@@ -91,7 +91,10 @@ export function registerVpnNickname(bot: Bot): void {
       }
 
       // Ban: same reversible follow-up as everywhere else; the card gets the 🧹 button.
-      await withCardLock("j", userId, () => rememberJoinLog(userId, msg.message_id, html), { bestEffort: true });
+      // Pointer for the follow-up; if the lock is busy, the follow-up posts its own small card.
+      await withCardLock("j", userId, () => rememberJoinLog(userId, msg.message_id, html)).catch((err) =>
+        console.error("[vpn] remember card failed", { userId, err }),
+      );
       const result = await runBanFollowUp(cleanupDeps(ctx.api), userId, { by: ctx.from });
       if (result.errors.length > 0) {
         await logError(ctx.api, `VPN-ник: бан ${userId}`, result.errors.join("; "));

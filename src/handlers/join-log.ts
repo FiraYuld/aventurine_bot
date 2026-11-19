@@ -78,8 +78,8 @@ export async function readCurrentProfile(
 
 /**
  * Shared handler of ✅ Свой / ↩️ Отменить / 🔄 Профиль for the discussion log (`j:`) and
- * the tournament chat (`t:`). ✅/↩️ run under the per-user card lock; `onDone` runs inside
- * it too (tournament: persist the confirmation). 🔄 only posts a reply.
+ * the tournament chat (`t:`). ✅/↩️ run under the per-user card lock; `beforeEdit` runs
+ * inside it, before the card changes (tournament: persist the confirmation). 🔄 only posts a reply.
  */
 export async function handleJoinCardButton(
   ctx: CallbackQueryContext<Context>,
@@ -87,7 +87,8 @@ export async function handleJoinCardButton(
     prefix: JoinCardPrefix;
     getCard: JoinCardDeps["getCard"];
     setCard: JoinCardDeps["setCard"];
-    onDone?: (action: "confirm" | "unconfirm", userId: number) => Promise<void>;
+    /** Persists the decision; runs before the card shows it (see applyJoinCardAction). */
+    beforeEdit?: (action: "confirm" | "unconfirm", userId: number) => Promise<void>;
   },
 ): Promise<void> {
   const parsed = parseJoinCardCallback(ctx.callbackQuery.data ?? "");
@@ -123,9 +124,9 @@ export async function handleJoinCardButton(
           messageId: msg.message_id,
           fallbackHtml: escapeHtml("text" in msg && msg.text ? msg.text : `ID ${userId}`),
           by: ctx.from,
+          beforeEdit: opts.beforeEdit ? () => opts.beforeEdit!(action, userId) : undefined,
         },
       );
-      if (r === "done") await opts.onDone?.(action, userId);
       return r;
     });
     const text =
@@ -216,9 +217,7 @@ export function registerJoinLog(bot: Bot): void {
         disable_notification: true,
         reply_markup: user.is_bot ? undefined : joinLogKeyboard(user.id),
       });
-      await withCardLock("j", user.id, () => rememberJoinLog(user.id, sent.message_id, html), {
-        bestEffort: true,
-      }).catch((err) =>
+      await withCardLock("j", user.id, () => rememberJoinLog(user.id, sent.message_id, html)).catch((err) =>
         console.error("[join-log] remember log entry failed", err),
       );
     } catch (err) {

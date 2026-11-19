@@ -271,6 +271,12 @@ export async function applyJoinCardAction(
     messageId: number;
     fallbackHtml: string;
     by?: User;
+    /**
+     * Runs after the state check and BEFORE the card is edited (tournament: persist the
+     * confirmation). If it throws, the card is not changed, so the card never shows
+     * "Свой" without the protection behind it.
+     */
+    beforeEdit?: () => Promise<void>;
   },
 ): Promise<JoinCardResult> {
   const stored = await deps.getCard(opts.userId).catch(() => null);
@@ -285,6 +291,7 @@ export async function applyJoinCardAction(
       ? joinConfirmedKeyboard(opts.userId, opts.prefix)
       : joinLogKeyboard(opts.userId, opts.prefix);
 
+  await opts.beforeEdit?.();
   try {
     await deps.api.editMessageText(deps.moderationChatId, opts.messageId, html, {
       parse_mode: "HTML",
