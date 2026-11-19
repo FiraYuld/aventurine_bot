@@ -1,5 +1,5 @@
 import type { Api, Bot, CallbackQueryContext, Context } from "grammy";
-import { withCardLock } from "../card-lock.js";
+import { CardLockBusyError, withCardLock } from "../card-lock.js";
 import type { User } from "grammy/types";
 import { config } from "../config.js";
 import { parseWipeCallback, runBanFollowUp, runWipe } from "../ban-cleanup.js";
@@ -136,6 +136,10 @@ export async function handleJoinCardButton(
           : "Кнопки возвращены";
     await ctx.answerCallbackQuery({ text }).catch(() => {});
   } catch (err) {
+    if (err instanceof CardLockBusyError) {
+      await ctx.answerCallbackQuery({ text: "Карточка сейчас обновляется — нажми ещё раз", show_alert: true }).catch(() => {});
+      return;
+    }
     await ctx.answerCallbackQuery().catch(() => {});
     await logError(ctx.api, `кнопка карточки ${opts.prefix}:${action} (${userId})`, err);
   }
@@ -212,7 +216,9 @@ export function registerJoinLog(bot: Bot): void {
         disable_notification: true,
         reply_markup: user.is_bot ? undefined : joinLogKeyboard(user.id),
       });
-      await withCardLock("j", user.id, () => rememberJoinLog(user.id, sent.message_id, html)).catch((err) =>
+      await withCardLock("j", user.id, () => rememberJoinLog(user.id, sent.message_id, html), {
+        bestEffort: true,
+      }).catch((err) =>
         console.error("[join-log] remember log entry failed", err),
       );
     } catch (err) {

@@ -1,4 +1,5 @@
 import type { Api } from "grammy";
+import { withCardLock } from "./card-lock.js";
 import type { User } from "grammy/types";
 import { NOT_WIPED_LINE, wipeKeyboard } from "./ban-cleanup.js";
 import { rememberJoinLog } from "./ban-cleanup-store.js";
@@ -81,7 +82,9 @@ export async function executeReactionBan(params: {
       html,
       params.replaceModerationMessageId,
     );
-    await rememberJoinLog(params.userId, logMessageId, html);
+    await withCardLock("j", params.userId, () => rememberJoinLog(params.userId, logMessageId, html), {
+      bestEffort: true,
+    });
   } catch (err) {
     console.error("Не удалось отправить лог бана в чат модерации:", err);
   }

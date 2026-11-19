@@ -1,6 +1,7 @@
 import type { Bot } from "grammy";
 import { runBanFollowUp } from "../ban-cleanup.js";
 import { cleanupDeps, rememberJoinLog } from "../ban-cleanup-store.js";
+import { withCardLock } from "../card-lock.js";
 import { config } from "../config.js";
 import { escapeHtml, logError } from "../logger.js";
 import { isAdminAnywhere } from "../moderation.js";
@@ -90,7 +91,7 @@ export function registerVpnNickname(bot: Bot): void {
       }
 
       // Ban: same reversible follow-up as everywhere else; the card gets the 🧹 button.
-      await rememberJoinLog(userId, msg.message_id, html);
+      await withCardLock("j", userId, () => rememberJoinLog(userId, msg.message_id, html), { bestEffort: true });
       const result = await runBanFollowUp(cleanupDeps(ctx.api), userId, { by: ctx.from });
       if (result.errors.length > 0) {
         await logError(ctx.api, `VPN-ник: бан ${userId}`, result.errors.join("; "));

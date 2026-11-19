@@ -275,7 +275,7 @@ export async function applyJoinCardAction(
 ): Promise<JoinCardResult> {
   const stored = await deps.getCard(opts.userId).catch(() => null);
   const own = stored !== null && stored.messageId === opts.messageId;
-  const base = own ? stored.html : opts.fallbackHtml.slice(0, 3900);
+  const base = own ? stored.html : opts.fallbackHtml;
   if (hasModerationResult(base)) return "state-changed";
 
   const clean = stripConfirmedFooter(base);

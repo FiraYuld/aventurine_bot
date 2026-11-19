@@ -139,7 +139,8 @@ export function registerTournament(bot: Bot): void {
         await logError(ctx.api, `чат турниров: ссылка от ${msg.from?.id}`, res.errors.join("; "));
       }
     } catch (err) {
-      await logError(ctx.api, `чат турниров: проверка сообщения ${msg.message_id}`, err);
+      // Lock busy / Redis down: nothing was deleted (strict lock) — safe default.
+      await logError(ctx.api, `чат турниров: проверка сообщения ${msg.message_id} (не тронуто)`, err);
     }
     // Nothing else handles the tournament chat: no next().
   });
@@ -183,7 +184,7 @@ export function registerTournament(bot: Bot): void {
         viaFolder: upd.via_chat_folder_invite_link,
         ...profile,
       });
-      await withCardLock("t", user.id, () => recordJoin(d, user, html));
+      await withCardLock("t", user.id, () => recordJoin(d, user, html), { bestEffort: true });
     } catch (err) {
       console.error("[tournament] join log failed", { userId: user.id, err });
     }
