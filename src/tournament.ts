@@ -180,6 +180,9 @@ export interface TournamentStore {
   claimLinkCard(userId: number): Promise<boolean>;
   /** Is the link-card slot taken (a link card was posted for the current stay)? */
   hasLinkCard(userId: number): Promise<boolean>;
+  /** "✅ Свой": a moderator vouched for this person; never treat them as a newcomer. */
+  isConfirmed(userId: number): Promise<boolean>;
+  setConfirmed(userId: number, confirmed: boolean): Promise<void>;
   getCard(userId: number): Promise<TournamentCard | null>;
   setCard(userId: number, card: TournamentCard): Promise<void>;
   addJoinMessage(userId: number, messageId: number): Promise<void>;
@@ -259,6 +262,7 @@ export async function guardNewcomerLink(deps: TournamentDeps, msg: Message): Pro
   const { api, store, tournamentChatId } = deps;
   const joinedAt = await store.getJoinedAt(user.id);
   if (joinedAt === null) return { acted: false, errors: [] };
+  if (await store.isConfirmed(user.id)) return { acted: false, errors: [] };
 
   try {
     const m = await api.getChatMember(tournamentChatId, user.id);
@@ -306,6 +310,8 @@ export async function guardNewcomerLink(deps: TournamentDeps, msg: Message): Pro
 
 /** First thing on a join (before slow profile reads), so an instant link is still caught. */
 export async function markNewcomer(deps: TournamentDeps, userId: number): Promise<void> {
+  // A late or repeated join event must not turn a confirmed person back into a newcomer.
+  if (await deps.store.isConfirmed(userId)) return;
   await deps.store.markJoined(userId, nowSec(deps));
 }
 

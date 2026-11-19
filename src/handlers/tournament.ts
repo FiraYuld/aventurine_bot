@@ -22,6 +22,7 @@ import {
   tournamentBan,
   tournamentUnmute,
   tournamentWipe,
+  wipeKeyboard,
   type TournamentCard,
   type TournamentDeps,
   type TournamentStore,
@@ -34,6 +35,7 @@ import { isInside, readCurrentProfile, readProfile } from "./join-log.js";
  *   tlink:<uid>    — one link card per user (24 h)
  *   tcard:<uid>    — moderation-chat card + its HTML (14 days)
  *   tjoinmsg:<uid> — "… joined the group" service message ids (48 h)
+ *   tok:<uid>      — "✅ Свой": never a newcomer again (180 days)
  */
 function createStore(): TournamentStore {
   const r = getRedis();
@@ -55,6 +57,13 @@ function createStore(): TournamentStore {
     },
     async hasLinkCard(userId) {
       return (await r.exists(`tlink:${userId}`)) > 0;
+    },
+    async isConfirmed(userId) {
+      return (await r.exists(`tok:${userId}`)) > 0;
+    },
+    async setConfirmed(userId, confirmed) {
+      if (confirmed) await r.set(`tok:${userId}`, "1", { ex: TOURNAMENT_CONFIRMED_TTL_SEC });
+      else await r.del(`tok:${userId}`);
     },
     async getCard(userId) {
       const raw: unknown = await r.get(`tcard:${userId}`);
@@ -85,6 +94,8 @@ function createStore(): TournamentStore {
     },
   };
 }
+
+const TOURNAMENT_CONFIRMED_TTL_SEC = 180 * 24 * 60 * 60;
 
 let storeFactory: () => TournamentStore = createStore;
 
@@ -198,9 +209,7 @@ export function registerTournament(bot: Bot): void {
     await ctx.answerCallbackQuery({ text: label }).catch(() => {});
     const store = storeFactory();
     try {
-      // A confirmed person is no longer a newcomer: their links are not deleted.
-      if (action === "confirm") await store.clearJoined(userId);
-      await applyJoinCardAction(
+      const result = await applyJoinCardAction(
         {
           api: ctx.api as unknown as JoinCardDeps["api"],
           getCard: (id) => store.getCard(id),
@@ -218,12 +227,19 @@ export function registerTournament(bot: Bot): void {
           fallbackHtml: escapeHtml("text" in msg && msg.text ? msg.text : `ID ${userId}`),
           by: ctx.from,
           currentMarkup: "reply_markup" in msg ? msg.reply_markup : undefined,
+          afterBanMarkup: wipeKeyboard(userId),
           readProfile: async () => {
             const { current, ...profile } = await readCurrentProfile(ctx.api, userId);
             return { user: current, ...profile };
           },
         },
       );
+      // A confirmed person is not a newcomer, now or after a late join event: links stay.
+      if (result === "done" && action === "confirm") {
+        await store.setConfirmed(userId, true);
+        await store.clearJoined(userId);
+      }
+      if (result === "done" && action === "unconfirm") await store.setConfirmed(userId, false);
     } catch (err) {
       await logError(ctx.api, `чат турниров: кнопка ${action} (${userId})`, err);
     }

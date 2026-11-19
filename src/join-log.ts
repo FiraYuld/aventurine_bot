@@ -94,7 +94,7 @@ const HINT_PATTERNS: Array<[RegExp, string]> = [
     "18+",
   ],
   // "Скуп <игры>", "Продать акк тут 👉 …" (tournament chat spam, Nov 2026).
-  [/скуп|выкуп\S*\s+акк|прода\S*\s+(?:сво\S*\s+)?акк|продажа\s+акк|buy\s+accounts?/iu, "скуп аккаунтов"],
+  [/(?<!\p{L})скуп|выкуп\S*\s+акк|прода\S*\s+(?:сво\S*\s+)?акк|продажа\s+акк|buy\s+accounts?/iu, "скуп аккаунтов"],
   [/казино|casino|ставк|букмекер|\bbet\b|1xbet|слот/iu, "казино/ставки"],
   [/заработ|доход|инвест|крипт|crypto|арбитраж|p2p|трейд/iu, "заработок/крипта"],
   [/знакомств|dating|девушк.{0,10}(рядом|город)|встреч/iu, "знакомства"],
@@ -118,13 +118,13 @@ export function findHints(texts: ReadonlyArray<string | undefined>): string[] {
  */
 export const NEW_ACCOUNT_ID_FROM = 8_000_000_000;
 
-const TG_LINK_IN_BIO_RE = /(?:t\.me|telegram\.me)\/\S+/iu;
+const TG_LINK_IN_BIO_RE = /(?<![\p{L}\p{N}._-])(?:t\.me|telegram\.me)\/\S+/iu;
 
 /**
  * Channel-join botnet seen in Nov 2026: a "Katya" name variant ("Катюша ❤️",
  * "Katyusha darling 🖤", "Катенька лапочка 😍"…), no username, no bio, no profile channel.
  */
-const KATYA_NAME_RE = /^\s*(?:кат[юяеи]|катер|katy|katj|ekaterin)/iu;
+const KATYA_NAME_RE = /^\s*(?:кат(?:юш|юн|юс|юх|юл|ен|ер|ька|я)|kat(?:yu|ya|ia|ie|ja)|ekaterin)/iu;
 
 /** Profile-shape markers (need structured fields, not just text). Informational only. */
 export function findProfileHints(info: Pick<JoinLogInfo, "user" | "bio" | "profileReadable" | "personalChannel">): string[] {
@@ -218,14 +218,32 @@ export function confirmedFooterHtml(by?: User): string {
   return `✅ <b>Свой</b> — проверил(а) ${escapeHtml(name)}.`;
 }
 
-/** Removes the "✅ Свой" footer added by confirmedFooterHtml (undo). */
+/**
+ * Removes the "✅ Свой" footer (undo). Also matches the plain-text form, for cards
+ * rebuilt from the message text (stored HTML expired or belongs to another message).
+ */
 export function stripConfirmedFooter(html: string): string {
-  return html.replace(/\n\n✅ <b>Свой<\/b> — [^\n]*/gu, "");
+  return html.replace(/\n\n✅ (?:<b>)?Свой(?:<\/b>)? — [^\n]*/gu, "");
 }
 
-/** Removes an earlier 🔄 section, so repeated refreshes don't pile up. */
+/** Removes an earlier 🔄 section (HTML or plain-text form), so refreshes don't pile up. */
 export function stripProfileRefresh(html: string): string {
-  return html.replace(/\n\n🔄 <b>Профиль сейчас<\/b>[\s\S]*?(?=\n\n|$)/gu, "");
+  return html.replace(/\n\n🔄 (?:<b>)?Профиль сейчас(?:<\/b>)?[\s\S]*?(?=\n\n|$)/gu, "");
+}
+
+/** Footers written by the ban follow-up / tournament ban and by the wipe (HTML or plain). */
+const BANNED_RE = /🔨 (?:<b>)?Забанен/u;
+const WIPED_RE = /🧹 (?:<b>)?Сообщения/u;
+
+/** Telegram's limit is 4096 characters of text; keep a margin for entities. */
+const CARD_MAX = 4000;
+
+function capCard(html: string): string {
+  if (html.length <= CARD_MAX) return html;
+  // Only plain-text fallbacks can grow (no tags to break): drop the middle, keep head and tail.
+  const head = html.slice(0, 1500);
+  const tail = html.slice(-(CARD_MAX - 1500 - 3));
+  return `${head.slice(0, head.lastIndexOf("\n"))}\n…\n${tail.slice(tail.indexOf("\n") + 1)}`;
 }
 
 export interface JoinCardEntry {
@@ -242,9 +260,15 @@ export interface JoinCardDeps {
   moderationChatId: number;
 }
 
+export type JoinCardResult = "done" | "already-banned";
+
 /**
  * ✅ Свой / ↩️ undo / 🔄 refresh on a join card (`messageId` = the card the button is on).
- * `fallbackHtml` is used when the stored card expired or belongs to another message.
+ * `fallbackHtml` (escaped message text) is used when the stored card expired or belongs to
+ * another message; in that case the stored pointer is left alone, so a later ban still
+ * updates the user's latest card.
+ * A card that already shows a ban never gets ✅/↩️, and 🔄 keeps its post-ban buttons
+ * (`afterBanMarkup` = the 🧹 button), so a click racing a ban can't undo its result.
  */
 export async function applyJoinCardAction(
   deps: JoinCardDeps,
@@ -256,26 +280,41 @@ export async function applyJoinCardAction(
     fallbackHtml: string;
     by?: User;
     currentMarkup?: unknown;
+    afterBanMarkup?: unknown;
     readProfile?: () => Promise<ProfileInfo>;
     now?: Date;
   },
-): Promise<void> {
+): Promise<JoinCardResult> {
+  // The slow part first, so the card is read right before it is written.
+  let profile: ProfileInfo | undefined;
+  if (opts.action === "refresh") {
+    if (!opts.readProfile) throw new Error("readProfile is required for refresh");
+    profile = await opts.readProfile();
+  }
+
   const stored = await deps.getCard(opts.userId).catch(() => null);
-  const base = stored && stored.messageId === opts.messageId ? stored.html : opts.fallbackHtml;
+  const own = stored !== null && stored.messageId === opts.messageId;
+  const base = own ? stored.html : opts.fallbackHtml;
+  const banned = BANNED_RE.test(base);
+
   let html: string;
   let markup: unknown;
-  if (opts.action === "confirm") {
-    html = `${stripConfirmedFooter(base)}\n\n${confirmedFooterHtml(opts.by)}`;
-    markup = joinConfirmedKeyboard(opts.userId, opts.prefix);
-  } else if (opts.action === "unconfirm") {
-    html = stripConfirmedFooter(base);
-    markup = joinLogKeyboard(opts.userId, opts.prefix);
+  if (opts.action === "confirm" || opts.action === "unconfirm") {
+    if (banned) return "already-banned";
+    const clean = stripConfirmedFooter(base);
+    if (opts.action === "confirm") {
+      html = `${clean}\n\n${confirmedFooterHtml(opts.by)}`;
+      markup = joinConfirmedKeyboard(opts.userId, opts.prefix);
+    } else {
+      html = clean;
+      markup = joinLogKeyboard(opts.userId, opts.prefix);
+    }
   } else {
-    if (!opts.readProfile) throw new Error("readProfile is required for refresh");
-    const profile = await opts.readProfile();
-    html = `${stripProfileRefresh(base)}\n\n${profileRefreshHtml(profile, opts.now)}`;
-    markup = opts.currentMarkup;
+    html = `${stripProfileRefresh(base)}\n\n${profileRefreshHtml(profile!, opts.now)}`;
+    markup = WIPED_RE.test(base) ? undefined : banned ? opts.afterBanMarkup : opts.currentMarkup;
   }
+  html = capCard(html);
+
   try {
     await deps.api.editMessageText(deps.moderationChatId, opts.messageId, html, {
       parse_mode: "HTML",
@@ -286,7 +325,8 @@ export async function applyJoinCardAction(
     const d = err && typeof err === "object" && "description" in err ? String(err.description) : "";
     if (!/message is not modified/i.test(d)) throw err;
   }
-  await deps.setCard(opts.userId, { messageId: opts.messageId, html });
+  if (own || stored === null) await deps.setCard(opts.userId, { messageId: opts.messageId, html });
+  return "done";
 }
 
 export function buildJoinLogHtml(info: JoinLogInfo): string {

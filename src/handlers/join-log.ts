@@ -1,7 +1,7 @@
 import type { Api, Bot } from "grammy";
 import type { User } from "grammy/types";
 import { config } from "../config.js";
-import { parseWipeCallback, runBanFollowUp, runWipe } from "../ban-cleanup.js";
+import { parseWipeCallback, runBanFollowUp, runWipe, wipeKeyboard } from "../ban-cleanup.js";
 import { cleanupDeps, rememberJoinLog, rememberJoinMessage } from "../ban-cleanup-store.js";
 import {
   applyJoinCardAction,
@@ -195,6 +195,7 @@ export function registerJoinLog(bot: Bot): void {
           fallbackHtml: escapeHtml("text" in msg && msg.text ? msg.text : `ID ${userId}`),
           by: ctx.from,
           currentMarkup: "reply_markup" in msg ? msg.reply_markup : undefined,
+          afterBanMarkup: wipeKeyboard(userId),
           readProfile: async () => {
             const { current, ...profile } = await readCurrentProfile(ctx.api, userId);
             return { user: current, ...profile };

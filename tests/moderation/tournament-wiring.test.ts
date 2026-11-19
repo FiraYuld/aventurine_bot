@@ -24,6 +24,7 @@ const USER = { id: 777, is_bot: false as const, first_name: "Скуп аккау
 const joined = new Map<number, number>();
 const cards = new Map<number, TournamentCard>();
 const linkClaimed = new Set<number>();
+const confirmed = new Set<number>();
 const store: TournamentStore = {
   async getJoinedAt(id) {
     return joined.get(id) ?? null;
@@ -42,6 +43,13 @@ const store: TournamentStore = {
   },
   async hasLinkCard(id) {
     return linkClaimed.has(id);
+  },
+  async isConfirmed(id) {
+    return confirmed.has(id);
+  },
+  async setConfirmed(id, on) {
+    if (on) confirmed.add(id);
+    else confirmed.delete(id);
   },
   async getCard(id) {
     return cards.get(id) ?? null;
@@ -140,6 +148,14 @@ test("✅ Свой on a tournament card: card edited without the ban button, new
   assert.match(String(edit.payload.text), /Свой/);
   const data = JSON.stringify(edit.payload.reply_markup);
   assert.ok(!data.includes(`t:b:${USER.id}`) && data.includes(`t:r:${USER.id}`));
+  assert.equal(joined.has(USER.id), false);
+  assert.equal(confirmed.has(USER.id), true);
+
+  // A late "joined" service message for the same join: still not a newcomer.
+  await bot.handleUpdate({
+    update_id: 5,
+    message: { message_id: 12, date: 0, chat: { id: TOUR, type: "supergroup" }, from: USER, new_chat_members: [USER] },
+  } as unknown as Update);
   assert.equal(joined.has(USER.id), false);
 });
 

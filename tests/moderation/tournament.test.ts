@@ -4,6 +4,7 @@ import type { ChatPermissions, Message, User } from "grammy/types";
 import {
   findLinkReason,
   guardNewcomerLink,
+  markNewcomer,
   parseTournamentCallback,
   recordJoin,
   tournamentBan,
@@ -83,6 +84,14 @@ class FakeStore implements TournamentStore {
   }
   async hasLinkCard(userId: number) {
     return this.linkClaimed.has(userId);
+  }
+  confirmed = new Set<number>();
+  async isConfirmed(userId: number) {
+    return this.confirmed.has(userId);
+  }
+  async setConfirmed(userId: number, on: boolean) {
+    if (on) this.confirmed.add(userId);
+    else this.confirmed.delete(userId);
   }
   async claimLinkCard(userId: number) {
     if (this.linkClaimed.has(userId)) return false;
@@ -241,6 +250,16 @@ test("after an unmute a new link from the same person gets a fresh card", async 
   api.calls = [];
   await guardNewcomerLink(deps, spamMessage(12));
   assert.ok(api.calls.some((c) => c.startsWith("edit:") || c.startsWith("send:")));
+});
+
+test("confirmed person: a late join event doesn't make them a newcomer, links stay", async () => {
+  const { api, store, deps } = setup();
+  store.confirmed.add(SPAMMER.id);
+  await markNewcomer(deps, SPAMMER.id);
+  assert.equal(store.joined.has(SPAMMER.id), false);
+  store.joined.set(SPAMMER.id, NOW); // even if the marker exists somehow
+  assert.equal((await guardNewcomerLink(deps, spamMessage())).acted, false);
+  assert.ok(!api.calls.some((c) => c.startsWith("delete:") || c.startsWith("restrict:")));
 });
 
 test("ban button: ban only in the tournament chat, delete join message, offer 🧹", async () => {

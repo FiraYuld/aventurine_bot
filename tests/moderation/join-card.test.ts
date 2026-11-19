@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { User } from "grammy/types";
 import {
   applyJoinCardAction,
+  findHints,
   findProfileHints,
   joinLogKeyboard,
   parseJoinCardCallback,
@@ -108,6 +109,63 @@ test("'message is not modified' is not an error", async () => {
     throw Object.assign(new Error("400"), { description: "Bad Request: message is not modified" });
   };
   await applyJoinCardAction(deps, { prefix: "j", action: "unconfirm", userId: USER_ID, messageId: 9, fallbackHtml: "x" });
+});
+
+test("race with a ban: ✅ is refused, 🔄 keeps the 🧹 buttons; wiped card gets no buttons", async () => {
+  const banned = `${CARD}
+
+🔨 <b>Забанен</b> (Модератор): удалён из чата и канала.`;
+  const { edits, deps } = setup({ messageId: 9, html: banned });
+  const wipe = { inline_keyboard: [[{ text: "🧹", callback_data: `j:w:${USER_ID}` }]] };
+  const stale = { inline_keyboard: [[{ text: "🔨", callback_data: `j:b:${USER_ID}` }]] };
+  const readProfile = async () => ({ user: { id: USER_ID, is_bot: false as const, first_name: "A" }, profileReadable: true });
+  const base = { prefix: "j" as const, userId: USER_ID, messageId: 9, fallbackHtml: "x", currentMarkup: stale, afterBanMarkup: wipe, readProfile };
+
+  assert.equal(await applyJoinCardAction(deps, { ...base, action: "confirm" }), "already-banned");
+  assert.equal(edits.length, 0);
+
+  await applyJoinCardAction(deps, { ...base, action: "refresh" });
+  assert.equal(edits[0]!.markup, wipe);
+  assert.match(edits[0]!.text, /Забанен/);
+
+  const { edits: e2, deps: d2 } = setup({ messageId: 9, html: `${banned}
+
+🧹 <b>Сообщения и реакции удалены</b>.` });
+  await applyJoinCardAction(d2, { ...base, action: "refresh" });
+  assert.equal(e2[0]!.markup, undefined);
+});
+
+test("button on an old card doesn't steal the pointer to the latest card", async () => {
+  const { cards, deps } = setup({ messageId: 50, html: "latest card" });
+  await applyJoinCardAction(deps, { prefix: "j", action: "confirm", userId: USER_ID, messageId: 9, fallbackHtml: "old card" });
+  assert.deepEqual(cards.get(USER_ID), { messageId: 50, html: "latest card" });
+});
+
+test("plain-text fallback: undo removes the footer, refreshes don't pile up, length capped", async () => {
+  const { edits, deps } = setup();
+  const plainConfirmed = "Вход в канал\n\n✅ Свой — проверил(а) Модератор.";
+  await applyJoinCardAction(deps, { prefix: "j", action: "unconfirm", userId: USER_ID, messageId: 9, fallbackHtml: plainConfirmed });
+  assert.equal(edits[0]!.text, "Вход в канал");
+
+  const readProfile = async () => ({ user: { id: USER_ID, is_bot: false as const, first_name: "A" }, profileReadable: true, bio: "б".repeat(200) });
+  let text = "Вход в канал";
+  for (let i = 0; i < 30; i++) {
+    // Each round: the card is rebuilt from its plain text (as Telegram returns it).
+    const { edits: e, deps: d } = setup();
+    await applyJoinCardAction(d, { prefix: "j", action: "refresh", userId: USER_ID, messageId: 9, fallbackHtml: text, readProfile });
+    text = e[0]!.text.replace(/<[^>]+>/g, "");
+  }
+  assert.equal(text.match(/Профиль сейчас/g)?.length, 1);
+  assert.ok(text.length < 4096);
+  assert.ok(edits.length === 1);
+});
+
+test("hint regexes: no false positives on ordinary words", () => {
+  assert.deepEqual(findHints(["Искупаться в море"]), []);
+  const u = (first_name: string): User => ({ id: 1, is_bot: false, first_name });
+  assert.deepEqual(findProfileHints({ user: u("A"), profileReadable: true, bio: "about.me/alice" }), []);
+  assert.deepEqual(findProfileHints({ user: u("Категорически против"), profileReadable: true }), []);
+  assert.deepEqual(findProfileHints({ user: u("Катя"), profileReadable: true }), ["похож на сеть «Кать» (пустой профиль)"]);
 });
 
 test("new-account hint by user ID", () => {
